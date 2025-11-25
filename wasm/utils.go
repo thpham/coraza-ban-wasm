@@ -129,9 +129,9 @@ func BanEntryFromJSON(data []byte) (*BanEntry, error) {
 
 // ScoreEntry represents a behavioral score record
 type ScoreEntry struct {
-	Fingerprint string `json:"fingerprint"`
-	Score       int    `json:"score"`
-	LastUpdated int64  `json:"last_updated"`
+	Fingerprint string    `json:"fingerprint"`
+	Score       int       `json:"score"`
+	LastUpdated int64     `json:"last_updated"`
 	RuleHits    []RuleHit `json:"rule_hits,omitempty"`
 }
 
