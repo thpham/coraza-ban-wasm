@@ -1,0 +1,131 @@
+# Envoy WASM Filter Configuration for coraza-ban-wasm
+#
+# This configuration shows how to integrate coraza-ban-wasm with Envoy.
+# The filter should be placed AFTER the Coraza WAF filter in the filter chain.
+#
+# Prerequisites:
+# 1. Coraza WASM filter must be configured and running
+# 2. Redis must be accessible via an HTTP proxy (e.g., webdis)
+# 3. The coraza-ban-wasm.wasm file must be available
+
+static_resources:
+  listeners:
+    - name: main_listener
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 8080
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: ingress_http
+                codec_type: AUTO
+                route_config:
+                  name: local_route
+                  virtual_hosts:
+                    - name: backend
+                      domains: ["*"]
+                      routes:
+                        - match:
+                            prefix: "/"
+                          route:
+                            cluster: backend_cluster
+
+                http_filters:
+                  # 1. Coraza WAF filter (must come first)
+                  - name: envoy.filters.http.wasm
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.wasm.v3.Wasm
+                      config:
+                        name: "coraza-waf"
+                        root_id: "coraza_waf"
+                        configuration:
+                          "@type": type.googleapis.com/google.protobuf.StringValue
+                          value: |
+                            {
+                              "rules": "Include @coraza.conf-recommended\nInclude @crs-setup.conf.example\nInclude @owasp_crs/*.conf"
+                            }
+                        vm_config:
+                          runtime: "envoy.wasm.runtime.v8"
+                          vm_id: "coraza_waf_vm"
+                          code:
+                            local:
+                              filename: "/etc/envoy/coraza-spoa.wasm"
+
+                  # 2. coraza-ban-wasm filter (must come after Coraza)
+                  - name: envoy.filters.http.wasm
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.wasm.v3.Wasm
+                      config:
+                        name: "coraza-ban-wasm"
+                        root_id: "coraza_ban_root"
+                        configuration:
+                          "@type": type.googleapis.com/google.protobuf.StringValue
+                          value: |
+                            {
+                              "redis_cluster": "redis_http",
+                              "ban_ttl_default": 600,
+                              "ban_ttl_by_severity": {
+                                "critical": 3600,
+                                "high": 1800,
+                                "medium": 600,
+                                "low": 300
+                              },
+                              "scoring_enabled": false,
+                              "score_threshold": 100,
+                              "score_by_severity": {
+                                "critical": 50,
+                                "high": 40,
+                                "medium": 20,
+                                "low": 10
+                              },
+                              "fingerprint_mode": "full",
+                              "cookie_name": "__bm",
+                              "inject_cookie": false,
+                              "ban_response_code": 403,
+                              "ban_response_body": "Access Denied",
+                              "log_level": "info",
+                              "dry_run": false
+                            }
+                        vm_config:
+                          runtime: "envoy.wasm.runtime.v8"
+                          vm_id: "coraza_ban_vm"
+                          code:
+                            local:
+                              filename: "/etc/envoy/coraza-ban-wasm.wasm"
+
+                  # 3. Router (must be last)
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+  clusters:
+    # Backend application cluster
+    - name: backend_cluster
+      type: STRICT_DNS
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: backend_cluster
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: backend
+                      port_value: 8080
+
+    # Redis HTTP proxy cluster (webdis)
+    - name: redis_http
+      type: STRICT_DNS
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: redis_http
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: webdis
+                      port_value: 7379

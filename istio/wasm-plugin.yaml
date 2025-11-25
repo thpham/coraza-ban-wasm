@@ -1,0 +1,146 @@
+# Istio WasmPlugin Configuration for coraza-ban-wasm
+#
+# This configuration shows how to deploy coraza-ban-wasm as an Istio WasmPlugin.
+# The plugin will be automatically injected into the Envoy sidecars.
+#
+# Prerequisites:
+# 1. Istio 1.12+ with WASM support enabled
+# 2. Coraza WAF already deployed (e.g., via coraza-proxy-wasm)
+# 3. Redis accessible within the mesh
+# 4. WASM binary hosted at an accessible URL or stored in a ConfigMap/OCI registry
+
+---
+# Option 1: WasmPlugin with HTTP URL
+apiVersion: extensions.istio.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: coraza-ban-wasm
+  namespace: istio-system
+spec:
+  # Apply to ingress gateway
+  selector:
+    matchLabels:
+      istio: ingressgateway
+  # Plugin URL (can be HTTP, OCI, or local file)
+  url: oci://ghcr.io/thpham/coraza-ban-wasm:latest
+  # Alternative: HTTP URL
+  # url: https://example.com/coraza-ban-wasm.wasm
+  # Phase determines when the plugin runs
+  phase: AUTHN  # Run during authentication phase
+  # Plugin configuration
+  pluginConfig:
+    redis_cluster: "outbound|7379||redis.default.svc.cluster.local"
+    ban_ttl_default: 600
+    ban_ttl_by_severity:
+      critical: 3600
+      high: 1800
+      medium: 600
+      low: 300
+    scoring_enabled: false
+    score_threshold: 100
+    fingerprint_mode: "full"
+    cookie_name: "__bm"
+    inject_cookie: false
+    ban_response_code: 403
+    ban_response_body: "Access Denied"
+    log_level: "info"
+    dry_run: false
+
+---
+# Option 2: WasmPlugin with ConfigMap (for air-gapped environments)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coraza-ban-wasm-binary
+  namespace: istio-system
+binaryData:
+  plugin.wasm: ""  # Base64-encoded WASM binary goes here
+
+---
+# Redis Service for ban storage
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: default
+spec:
+  selector:
+    app: redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+    - name: http
+      port: 7379
+      targetPort: 7379
+
+---
+# Redis with Webdis sidecar deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+        - name: webdis
+          image: nicolas/webdis:latest
+          ports:
+            - containerPort: 7379
+          env:
+            - name: REDIS_HOST
+              value: "localhost"
+          resources:
+            requests:
+              memory: "32Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "200m"
+
+---
+# EnvoyFilter to ensure correct filter ordering
+# (coraza-ban-wasm must run AFTER coraza-waf)
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: coraza-ban-wasm-ordering
+  namespace: istio-system
+spec:
+  workloadSelector:
+    labels:
+      istio: ingressgateway
+  configPatches:
+    - applyTo: HTTP_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: "envoy.filters.network.http_connection_manager"
+              subFilter:
+                name: "coraza-ban-wasm"
+      patch:
+        operation: INSERT_AFTER
+        value:
+          name: "envoy.filters.http.router"
