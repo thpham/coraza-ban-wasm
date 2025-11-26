@@ -160,11 +160,13 @@ When a WAF block occurs:
 ```
 `coraza-ban-wasm`/
 ├── wasm/                     # TinyGo WASM filter code
-│   ├── main.go               # entrypoint
-│   ├── fingerprint.go        # fingerprint engine
-│   ├── redis.go              # Redis integration
-│   ├── metadata.go           # Coraza metadata parsing
 │   ├── ban.go                # ban issuing + enforcement
+│   ├── cache.go              # cache
+│   ├── config.go             # config
+│   ├── fingerprint.go        # fingerprint engine
+│   ├── main.go               # entrypoint
+│   ├── metadata.go           # Coraza metadata parsing
+│   ├── redis.go              # Redis integration
 │   └── utils.go
 │
 ├── envoy/                    # Envoy config snippets
