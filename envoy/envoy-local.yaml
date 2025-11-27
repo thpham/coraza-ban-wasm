@@ -1,0 +1,140 @@
+# Envoy configuration for local development and testing
+#
+# Filter chain:
+#   1. coraza-ban-wasm (checks bans, issues bans on WAF 403 response)
+#   2. Coraza WAF (blocks malicious requests)
+#   3. Router (forwards to backend)
+#
+# Note: Ban filter MUST run before WAF to see the 403 response
+
+admin:
+  address:
+    socket_address:
+      address: 0.0.0.0
+      port_value: 9901
+
+static_resources:
+  listeners:
+    - name: main
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 8080
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: ingress_http
+                codec_type: AUTO
+                route_config:
+                  name: local_route
+                  virtual_hosts:
+                    - name: backend
+                      domains: ["*"]
+                      routes:
+                        - match:
+                            prefix: "/"
+                          route:
+                            cluster: backend
+                http_filters:
+                  # Filter 1: coraza-ban-wasm
+                  # Enforces bans on request, issues bans on WAF block (403 response)
+                  # Must run BEFORE Coraza WAF to:
+                  #   1. Check bans before WAF processing
+                  #   2. See the 403 response from WAF to issue new bans
+                  - name: envoy.filters.http.wasm
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.wasm.v3.Wasm
+                      config:
+                        name: "coraza-ban-wasm"
+                        root_id: "coraza_ban_root"
+                        configuration:
+                          "@type": type.googleapis.com/google.protobuf.StringValue
+                          value: |
+                            {
+                              "redis_cluster": "webdis",
+                              "ban_ttl_default": 300,
+                              "ban_ttl_by_severity": {
+                                "CRITICAL": 3600,
+                                "ERROR": 1800,
+                                "WARNING": 600,
+                                "NOTICE": 300
+                              },
+                              "scoring_enabled": false,
+                              "fingerprint_mode": "full",
+                              "dry_run": false,
+                              "ban_response_code": 403,
+                              "ban_response_body": "Access Denied - You have been banned",
+                              "log_level": "debug"
+                            }
+                        vm_config:
+                          runtime: "envoy.wasm.runtime.v8"
+                          code:
+                            local:
+                              filename: "/etc/envoy/coraza-ban-wasm.wasm"
+
+                  # Filter 2: Coraza WAF
+                  # Evaluates requests against OWASP CRS rules
+                  - name: envoy.filters.http.wasm
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.wasm.v3.Wasm
+                      config:
+                        name: "coraza-waf"
+                        root_id: ""
+                        configuration:
+                          "@type": type.googleapis.com/google.protobuf.StringValue
+                          value: |
+                            {
+                              "directives_map": {
+                                "default": [
+                                  "SecRuleEngine On",
+                                  "SecRequestBodyAccess On",
+                                  "SecResponseBodyAccess Off",
+                                  "SecRule ARGS|ARGS_NAMES|REQUEST_COOKIES|REQUEST_COOKIES_NAMES|REQUEST_BODY|REQUEST_HEADERS|XML:/*|XML://@* \"@rx (?i)(union.*select|select.*from|insert.*into|delete.*from|drop.*table|update.*set)\" \"id:1001,phase:2,deny,status:403,msg:'SQL Injection Detected',tag:'attack-sqli',severity:'CRITICAL'\"",
+                                  "SecRule ARGS|ARGS_NAMES|REQUEST_COOKIES|REQUEST_COOKIES_NAMES|REQUEST_BODY|REQUEST_HEADERS \"@rx (?i)(<script|javascript:|onerror=|onload=)\" \"id:1002,phase:2,deny,status:403,msg:'XSS Attack Detected',tag:'attack-xss',severity:'ERROR'\"",
+                                  "SecRule REQUEST_URI|ARGS|ARGS_NAMES \"@rx (?i)(\\.\\.[\\\\/]|/etc/passwd|/proc/self)\" \"id:1003,phase:2,deny,status:403,msg:'Path Traversal Detected',tag:'attack-lfi',severity:'ERROR'\"",
+                                  "SecRule ARGS|REQUEST_BODY \"@rx (?i)(;\\s*(ls|cat|wget|curl|bash|sh)\\s)\" \"id:1004,phase:2,deny,status:403,msg:'Command Injection Detected',tag:'attack-rce',severity:'CRITICAL'\""
+                                ]
+                              },
+                              "default_directives": "default"
+                            }
+                        vm_config:
+                          runtime: "envoy.wasm.runtime.v8"
+                          code:
+                            local:
+                              filename: "/etc/envoy/coraza-waf.wasm"
+
+                  # Filter 3: Router
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+  clusters:
+    # Backend service (httpbin)
+    - name: backend
+      type: STRICT_DNS
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: backend
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: backend
+                      port_value: 80
+
+    # Webdis (Redis HTTP proxy)
+    - name: webdis
+      type: STRICT_DNS
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: webdis
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: webdis
+                      port_value: 7379

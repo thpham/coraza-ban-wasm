@@ -1,0 +1,66 @@
+# Local development stack for coraza-ban-wasm integration testing
+#
+# Usage:
+#   just up      - Start the stack
+#   just down    - Stop the stack
+#   just logs    - View Envoy logs
+#   just reload  - Rebuild WASM and restart Envoy
+
+services:
+  envoy:
+    image: istio/proxyv2:1.27.3
+    entrypoint: ["envoy"]
+    command:
+      - "-c"
+      - "/etc/envoy/envoy.yaml"
+      - "--log-level"
+      - "info"
+      - "--concurrency"
+      - "2"
+    volumes:
+      - ./envoy/envoy-local.yaml:/etc/envoy/envoy.yaml:ro
+      - ./coraza-ban-wasm.wasm:/etc/envoy/coraza-ban-wasm.wasm:ro
+      - ./coraza-waf.wasm:/etc/envoy/coraza-waf.wasm:ro
+    ports:
+      - "8080:8080"   # HTTP proxy
+      - "9901:9901"   # Admin interface
+    depends_on:
+      - webdis
+      - backend
+    networks:
+      - coraza-net
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - coraza-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  webdis:
+    image: nicolas/webdis:latest
+    environment:
+      REDIS_HOST: redis
+    ports:
+      - "7379:7379"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - coraza-net
+
+  backend:
+    image: kennethreitz/httpbin
+    ports:
+      - "8081:80"
+    networks:
+      - coraza-net
+
+networks:
+  coraza-net:
+    driver: bridge

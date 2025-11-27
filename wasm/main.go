@@ -1,13 +1,11 @@
 package main
 
 import (
-	"github.com/proxy-wasm/proxy-wasm-go-sdk/proxywasm"
-	"github.com/proxy-wasm/proxy-wasm-go-sdk/proxywasm/types"
+	"github.com/tetratelabs/proxy-wasm-go-sdk/proxywasm"
+	"github.com/tetratelabs/proxy-wasm-go-sdk/proxywasm/types"
 )
 
-func main() {}
-
-func init() {
+func main() {
 	proxywasm.SetVMContext(&vmContext{})
 }
 
@@ -116,7 +114,14 @@ func (ctx *httpContext) OnHttpRequestHeaders(numHeaders int, endOfStream bool) t
 
 // OnHttpResponseHeaders is called when response headers are received
 func (ctx *httpContext) OnHttpResponseHeaders(numHeaders int, endOfStream bool) types.Action {
-	ctx.logDebug("processing response headers")
+	// Skip if we already denied this request (client was banned)
+	if ctx.isBanned {
+		ctx.logDebug("skipping response processing - request was already denied as banned")
+		return types.ActionContinue
+	}
+
+	statusCode := ctx.getStatusCode()
+	ctx.logDebug("processing response headers, status=%d", statusCode)
 
 	// Extract Coraza WAF metadata
 	ctx.corazaMetadata = ctx.extractCorazaMetadata()
@@ -130,6 +135,16 @@ func (ctx *httpContext) OnHttpResponseHeaders(numHeaders int, endOfStream bool) 
 		)
 
 		// Issue ban for this fingerprint
+		ctx.issueBan()
+	} else if statusCode == 403 && ctx.fingerprint != "" {
+		// Fallback: if we got 403 but no metadata, assume it's a WAF block
+		// This is safe because Coraza WAF is the only downstream filter that returns 403
+		ctx.logInfo("WAF block detected (403 fallback), issuing ban for fingerprint=%s", ctx.fingerprint)
+		ctx.corazaMetadata = &CorazaMetadata{
+			Action:   "block",
+			Severity: "medium",
+			RuleID:   "waf-403",
+		}
 		ctx.issueBan()
 	}
 

@@ -1,2 +1,6 @@
 .direnv/
 *.wasm
+
+# Test coverage
+coverage.out
+coverage.html

@@ -3,7 +3,7 @@ package main
 import (
 	"strings"
 
-	"github.com/proxy-wasm/proxy-wasm-go-sdk/proxywasm"
+	"github.com/tetratelabs/proxy-wasm-go-sdk/proxywasm"
 )
 
 // calculateFingerprint computes a composite client fingerprint
