@@ -3,7 +3,7 @@ package main
 import (
 	"encoding/json"
 
-	"github.com/proxy-wasm/proxy-wasm-go-sdk/proxywasm"
+	"github.com/tetratelabs/proxy-wasm-go-sdk/proxywasm"
 )
 
 // PluginConfig holds the configuration for the coraza-ban-wasm plugin

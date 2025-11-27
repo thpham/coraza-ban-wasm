@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+
+	"github.com/tetratelabs/proxy-wasm-go-sdk/proxywasm"
 )
 
 // checkBan checks if the current request should be blocked
@@ -160,9 +162,7 @@ func (ctx *httpContext) handleRedisScoreResponse(success bool, score int) {
 func resumeHttpRequest() error {
 	// In proxy-wasm, we use ResumeHttpRequest to continue processing
 	// after an async operation completes
-	// Note: This is a placeholder - actual implementation depends on
-	// how the async Redis call is structured
-	return nil
+	return proxywasm.ResumeHttpRequest()
 }
 
 // BanInfo provides information about a ban for logging/debugging
