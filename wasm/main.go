@@ -67,13 +67,19 @@ func (ctx *pluginContext) OnPluginStart(pluginConfigurationSize int) types.OnPlu
 // NewHttpContext creates a new HTTP context for each request
 func (ctx *pluginContext) NewHttpContext(contextID uint32) types.HttpContext {
 	logger := NewPluginLogger(ctx.config, contextID)
+	banStore := NewLocalBanStore(logger)
+	scoreStore := NewLocalScoreStore(logger, ctx.config.ScoreDecaySeconds)
+
 	return &httpContext{
-		contextID:     contextID,
-		pluginContext: ctx,
-		config:        ctx.config,
-		logger:        logger,
-		banStore:      NewLocalBanStore(logger),
-		scoreStore:    NewLocalScoreStore(logger, ctx.config.ScoreDecaySeconds),
+		contextID:          contextID,
+		pluginContext:      ctx,
+		config:             ctx.config,
+		logger:             logger,
+		banStore:           banStore,
+		scoreStore:         scoreStore,
+		fingerprintService: NewFingerprintService(ctx.config, logger),
+		metadataService:    NewMetadataService(logger),
+		banService:         NewBanService(ctx.config, logger, banStore, scoreStore),
 	}
 }
 
@@ -85,9 +91,12 @@ type httpContext struct {
 	config        *PluginConfig
 
 	// Services
-	logger     Logger
-	banStore   BanStore
-	scoreStore ScoreStore
+	logger             Logger
+	banStore           BanStore
+	scoreStore         ScoreStore
+	fingerprintService *FingerprintService
+	metadataService    *MetadataService
+	banService         *BanService
 
 	// Request state
 	fingerprint     string
@@ -105,8 +114,14 @@ type httpContext struct {
 func (ctx *httpContext) OnHttpRequestHeaders(numHeaders int, endOfStream bool) types.Action {
 	ctx.logDebug("processing request headers")
 
-	// Calculate client fingerprint
-	ctx.calculateFingerprint()
+	// Calculate client fingerprint using the service
+	result := ctx.fingerprintService.CalculateWithDetails()
+	ctx.fingerprint = result.Fingerprint
+	ctx.clientIP = result.ClientIP
+	ctx.userAgent = result.UserAgent
+	ctx.ja3Fingerprint = result.JA3Fingerprint
+	ctx.cookieValue = result.CookieValue
+	ctx.generatedCookie = result.GeneratedCookie
 
 	// Check if client is banned
 	if ctx.checkBan() {
@@ -129,11 +144,11 @@ func (ctx *httpContext) OnHttpResponseHeaders(numHeaders int, endOfStream bool) 
 		return types.ActionContinue
 	}
 
-	statusCode := ctx.getStatusCode()
+	statusCode := ctx.metadataService.GetStatusCode()
 	ctx.logDebug("processing response headers, status=%d", statusCode)
 
-	// Extract Coraza WAF metadata
-	ctx.corazaMetadata = ctx.extractCorazaMetadata()
+	// Extract Coraza WAF metadata using the service
+	ctx.corazaMetadata = ctx.metadataService.Extract()
 
 	// Check if WAF blocked the request
 	if ctx.corazaMetadata != nil && ctx.corazaMetadata.IsBlocked() {
