@@ -291,3 +291,150 @@ func TestPluginConfig_ShouldLog_ErrorLevel(t *testing.T) {
 		}
 	}
 }
+
+func TestPluginConfig_ShouldLog_UnknownLevels(t *testing.T) {
+	config := DefaultConfig()
+	config.LogLevel = "unknown_level"
+
+	// Unknown config level defaults to info (priority 1)
+	// Unknown message level defaults to info (priority 1)
+	if !config.ShouldLog("unknown_message") {
+		t.Error("unknown levels should default to info and be logged")
+	}
+}
+
+func TestPluginConfig_ShouldLog_WarnLevel(t *testing.T) {
+	config := DefaultConfig()
+	config.LogLevel = LogLevelWarn
+
+	tests := []struct {
+		level    string
+		expected bool
+	}{
+		{LogLevelDebug, false},
+		{LogLevelInfo, false},
+		{LogLevelWarn, true},
+		{LogLevelError, true},
+	}
+
+	for _, tt := range tests {
+		result := config.ShouldLog(tt.level)
+		if result != tt.expected {
+			t.Errorf("ShouldLog(%s) with LogLevel=warn = %v, expected %v", tt.level, result, tt.expected)
+		}
+	}
+}
+
+func TestPluginConfig_GetScore_DefaultFallback(t *testing.T) {
+	config := DefaultConfig()
+	// Empty maps - should use default score of 10
+	config.ScoreRules = map[string]int{}
+	config.ScoreBySeverity = map[string]int{}
+
+	score := config.GetScore("unknown-rule", "unknown-severity")
+
+	if score != 10 {
+		t.Errorf("expected default score 10, got %d", score)
+	}
+}
+
+func TestPluginConfig_GetScore_SeverityFallback(t *testing.T) {
+	config := DefaultConfig()
+	config.ScoreRules = map[string]int{}
+	config.ScoreBySeverity = map[string]int{
+		"high":   40,
+		"medium": 20,
+	}
+
+	// Unknown rule falls back to severity
+	score := config.GetScore("unknown-rule", "medium")
+	if score != 20 {
+		t.Errorf("expected severity score 20, got %d", score)
+	}
+}
+
+func TestPluginConfig_Validate_Valid5xxResponseCode(t *testing.T) {
+	config := DefaultConfig()
+	config.BanResponseCode = 503 // Valid 5xx code
+
+	err := config.Validate()
+
+	if err != nil {
+		t.Errorf("5xx response code should be valid: %v", err)
+	}
+}
+
+func TestPluginConfig_Validate_MultipleErrors(t *testing.T) {
+	config := DefaultConfig()
+	config.BanTTLDefault = 100000      // Invalid
+	config.BanResponseCode = 200       // Invalid
+	config.ScoringEnabled = true
+	config.ScoreThreshold = 20000      // Invalid
+
+	err := config.Validate()
+
+	if err == nil {
+		t.Error("expected validation errors")
+	}
+	// Should contain multiple error messages
+	errStr := err.Error()
+	if !strings.Contains(errStr, "ban_ttl_default") {
+		t.Error("error should mention ban_ttl_default")
+	}
+	if !strings.Contains(errStr, "ban_response_code") {
+		t.Error("error should mention ban_response_code")
+	}
+	if !strings.Contains(errStr, "score_threshold") {
+		t.Error("error should mention score_threshold")
+	}
+}
+
+func TestPluginConfig_Validate_ScoringDisabled_NoThresholdCheck(t *testing.T) {
+	config := DefaultConfig()
+	config.ScoringEnabled = false
+	config.ScoreThreshold = 20000 // Would be invalid if scoring was enabled
+
+	err := config.Validate()
+
+	// Should pass because scoring is disabled
+	if err != nil {
+		t.Errorf("should not validate score_threshold when scoring disabled: %v", err)
+	}
+}
+
+func TestPluginConfig_GetBanTTL_EmptySeverityMap(t *testing.T) {
+	config := DefaultConfig()
+	config.BanTTLDefault = 300
+	config.BanTTLBySeverity = map[string]int{} // Empty
+
+	ttl := config.GetBanTTL("critical")
+
+	if ttl != 300 {
+		t.Errorf("expected default TTL 300 with empty severity map, got %d", ttl)
+	}
+}
+
+func TestPluginConfig_Validate_BoundaryBanTTL(t *testing.T) {
+	// Test boundary: exactly 24 hours should be valid
+	config := DefaultConfig()
+	config.BanTTLDefault = 86400 // 24 hours exactly
+
+	err := config.Validate()
+
+	if err != nil {
+		t.Errorf("24 hours TTL should be valid: %v", err)
+	}
+}
+
+func TestPluginConfig_Validate_BoundaryScoreThreshold(t *testing.T) {
+	// Test boundary: exactly 10000 should be valid
+	config := DefaultConfig()
+	config.ScoringEnabled = true
+	config.ScoreThreshold = 10000
+
+	err := config.Validate()
+
+	if err != nil {
+		t.Errorf("score threshold 10000 should be valid: %v", err)
+	}
+}
