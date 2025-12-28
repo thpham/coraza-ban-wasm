@@ -15,9 +15,9 @@ func (ctx *httpContext) checkBan() bool {
 	}
 
 	// 2. Check Redis asynchronously (if configured)
-	if ctx.fingerprint != "" && ctx.config.RedisCluster != "" {
-		ctx.checkRedisBanAsync()
-		// Note: pendingRedis will be set if we need to wait for Redis response
+	if ctx.fingerprint != "" && ctx.redisClient.IsConfigured() {
+		ctx.pendingRedis = true
+		ctx.redisClient.CheckBanAsync(ctx.fingerprint, ctx.handleRedisBanResponse)
 	}
 
 	return false
@@ -30,8 +30,8 @@ func (ctx *httpContext) issueBan() {
 	result := ctx.banService.IssueBan(ctx.fingerprint, ctx.corazaMetadata)
 
 	// Store in Redis asynchronously if ban was issued
-	if result.Issued && result.Entry != nil && ctx.config.RedisCluster != "" {
-		ctx.setRedisBanAsync(result.Entry)
+	if result.Issued && result.Entry != nil && ctx.redisClient.IsConfigured() {
+		ctx.redisClient.SetBanAsync(result.Entry, ctx.handleRedisBanSetResponse)
 	}
 }
 

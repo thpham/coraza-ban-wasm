@@ -50,6 +50,12 @@ func (ctx *pluginContext) OnPluginStart(pluginConfigurationSize int) types.OnPlu
 		return types.OnPluginStartStatusFailed
 	}
 
+	// Validate configuration for fail-fast behavior
+	if err := config.Validate(); err != nil {
+		proxywasm.LogCriticalf("coraza-ban-wasm: %v", err)
+		return types.OnPluginStartStatusFailed
+	}
+
 	ctx.config = config
 
 	proxywasm.LogInfof("coraza-ban-wasm: plugin started with config - "+
@@ -70,6 +76,14 @@ func (ctx *pluginContext) NewHttpContext(contextID uint32) types.HttpContext {
 	banStore := NewLocalBanStore(logger)
 	scoreStore := NewLocalScoreStore(logger, ctx.config.ScoreDecaySeconds)
 
+	// Create appropriate Redis client based on configuration
+	var redisClient RedisClient
+	if ctx.config.RedisCluster != "" {
+		redisClient = NewWebdisClient(ctx.config.RedisCluster, uint32(DefaultRedisTimeout), logger)
+	} else {
+		redisClient = NewNoopRedisClient()
+	}
+
 	return &httpContext{
 		contextID:          contextID,
 		pluginContext:      ctx,
@@ -80,6 +94,7 @@ func (ctx *pluginContext) NewHttpContext(contextID uint32) types.HttpContext {
 		fingerprintService: NewFingerprintService(ctx.config, logger),
 		metadataService:    NewMetadataService(logger),
 		banService:         NewBanService(ctx.config, logger, banStore, scoreStore),
+		redisClient:        redisClient,
 	}
 }
 
@@ -97,6 +112,7 @@ type httpContext struct {
 	fingerprintService *FingerprintService
 	metadataService    *MetadataService
 	banService         *BanService
+	redisClient        RedisClient
 
 	// Request state
 	fingerprint     string

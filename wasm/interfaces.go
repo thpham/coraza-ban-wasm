@@ -52,6 +52,30 @@ type FingerprintCalculator interface {
 }
 
 // =============================================================================
+// Redis Client Interface
+// =============================================================================
+
+// RedisClient defines async Redis operations for ban management.
+// All operations are non-blocking and use callbacks for results.
+// This interface enables dependency injection and facilitates unit testing.
+type RedisClient interface {
+	// CheckBanAsync checks if a fingerprint is banned in Redis.
+	// Callback receives (isBanned, entry) - entry may be nil if not banned.
+	CheckBanAsync(fingerprint string, callback func(bool, *BanEntry))
+
+	// SetBanAsync stores a ban entry in Redis.
+	// Callback receives success status.
+	SetBanAsync(entry *BanEntry, callback func(bool))
+
+	// DeleteBanAsync removes a ban from Redis.
+	// Fire-and-forget, no callback needed.
+	DeleteBanAsync(fingerprint string)
+
+	// IsConfigured returns true if Redis is configured.
+	IsConfigured() bool
+}
+
+// =============================================================================
 // Logger Interface
 // =============================================================================
 

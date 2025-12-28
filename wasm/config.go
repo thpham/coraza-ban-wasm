@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 
 	"github.com/tetratelabs/proxy-wasm-go-sdk/proxywasm"
 )
@@ -213,6 +215,92 @@ func (c *PluginConfig) validate() {
 			"low":      10,
 		}
 	}
+}
+
+// Validate performs comprehensive validation of the configuration.
+// Returns an error if any configuration values are invalid.
+// This is called during plugin startup for fail-fast behavior.
+func (c *PluginConfig) Validate() error {
+	var errors []string
+
+	// Ban TTL: 1 second to 24 hours
+	if c.BanTTLDefault < 1 || c.BanTTLDefault > 86400 {
+		errors = append(errors, "ban_ttl_default must be between 1-86400 seconds")
+	}
+
+	// Validate TTL by severity values
+	for severity, ttl := range c.BanTTLBySeverity {
+		if ttl < 1 || ttl > 86400 {
+			errors = append(errors, fmt.Sprintf("ban_ttl_by_severity[%s] must be between 1-86400 seconds", severity))
+		}
+	}
+
+	// Score threshold: 1 to 10000
+	if c.ScoringEnabled && (c.ScoreThreshold < 1 || c.ScoreThreshold > 10000) {
+		errors = append(errors, "score_threshold must be between 1-10000")
+	}
+
+	// Score decay: 1 second to 1 hour
+	if c.ScoreDecaySeconds < 1 || c.ScoreDecaySeconds > 3600 {
+		errors = append(errors, "score_decay_seconds must be between 1-3600 seconds")
+	}
+
+	// Score TTL: 1 second to 24 hours
+	if c.ScoreTTL < 1 || c.ScoreTTL > 86400 {
+		errors = append(errors, "score_ttl must be between 1-86400 seconds")
+	}
+
+	// Validate score rules values
+	for ruleID, score := range c.ScoreRules {
+		if score < 1 || score > 1000 {
+			errors = append(errors, fmt.Sprintf("score_rules[%s] must be between 1-1000", ruleID))
+		}
+	}
+
+	// Validate score by severity values
+	for severity, score := range c.ScoreBySeverity {
+		if score < 1 || score > 1000 {
+			errors = append(errors, fmt.Sprintf("score_by_severity[%s] must be between 1-1000", severity))
+		}
+	}
+
+	// Fingerprint mode validation
+	validModes := map[string]bool{
+		FingerprintModeFull:    true,
+		FingerprintModePartial: true,
+		FingerprintModeIPOnly:  true,
+	}
+	if !validModes[c.FingerprintMode] {
+		errors = append(errors, fmt.Sprintf("fingerprint_mode must be one of: %s, %s, %s",
+			FingerprintModeFull, FingerprintModePartial, FingerprintModeIPOnly))
+	}
+
+	// Ban response code: 4xx or 5xx
+	if c.BanResponseCode < 400 || c.BanResponseCode > 599 {
+		errors = append(errors, "ban_response_code must be between 400-599")
+	}
+
+	// Log level validation
+	validLogLevels := map[string]bool{
+		LogLevelDebug: true,
+		LogLevelInfo:  true,
+		LogLevelWarn:  true,
+		LogLevelError: true,
+	}
+	if !validLogLevels[c.LogLevel] {
+		errors = append(errors, fmt.Sprintf("log_level must be one of: %s, %s, %s, %s",
+			LogLevelDebug, LogLevelInfo, LogLevelWarn, LogLevelError))
+	}
+
+	// Cookie name validation (if injection is enabled)
+	if c.InjectCookie && c.CookieName == "" {
+		errors = append(errors, "cookie_name is required when inject_cookie is true")
+	}
+
+	if len(errors) > 0 {
+		return fmt.Errorf("configuration validation failed: %s", strings.Join(errors, "; "))
+	}
+	return nil
 }
 
 // GetBanTTL returns the appropriate TTL for a given severity

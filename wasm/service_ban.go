@@ -25,19 +25,28 @@ type BanIssueResult struct {
 // It uses BanStore and ScoreStore for persistence and handles
 // the core ban logic independent of Redis operations.
 type BanService struct {
-	config     *PluginConfig
-	logger     Logger
-	banStore   BanStore
-	scoreStore ScoreStore
+	config       *PluginConfig
+	logger       Logger
+	banStore     BanStore
+	scoreStore   ScoreStore
+	eventHandler EventHandler
 }
 
 // NewBanService creates a new ban service.
 func NewBanService(config *PluginConfig, logger Logger, banStore BanStore, scoreStore ScoreStore) *BanService {
 	return &BanService{
-		config:     config,
-		logger:     logger,
-		banStore:   banStore,
-		scoreStore: scoreStore,
+		config:       config,
+		logger:       logger,
+		banStore:     banStore,
+		scoreStore:   scoreStore,
+		eventHandler: NewLoggingEventHandler(logger),
+	}
+}
+
+// SetEventHandler sets a custom event handler for ban events.
+func (s *BanService) SetEventHandler(handler EventHandler) {
+	if handler != nil {
+		s.eventHandler = handler
 	}
 }
 
@@ -52,6 +61,11 @@ func (s *BanService) CheckBan(fingerprint string) *BanCheckResult {
 	if entry, found := s.banStore.CheckBan(fingerprint); found {
 		s.logger.Info("ban found in local cache for %s (rule=%s, expires=%d)",
 			fingerprint, entry.RuleID, entry.ExpiresAt)
+
+		// Emit enforced event
+		event := NewBanEvent(BanEventEnforced, fingerprint, entry.RuleID, entry.Severity, "local")
+		s.eventHandler.OnBanEvent(event)
+
 		return &BanCheckResult{IsBanned: true, Entry: entry}
 	}
 
@@ -106,6 +120,11 @@ func (s *BanService) issueDirectBan(fingerprint, ruleID, severity string) *BanIs
 	s.logger.Info("ban issued: fingerprint=%s, rule=%s, severity=%s, ttl=%d",
 		fingerprint, ruleID, severity, ttl)
 
+	// Emit issued event
+	event := NewBanEvent(BanEventIssued, fingerprint, ruleID, severity, "local")
+	event.TTL = ttl
+	s.eventHandler.OnBanEvent(event)
+
 	return &BanIssueResult{Issued: true, Entry: entry}
 }
 
@@ -124,6 +143,12 @@ func (s *BanService) issueScoreBasedBan(fingerprint, ruleID, severity string) *B
 	s.logger.Info("score updated: fingerprint=%s, rule=%s, score=%d/%d",
 		fingerprint, ruleID, newScore, s.config.ScoreThreshold)
 
+	// Emit score updated event
+	scoreEvent := NewBanEvent(BanEventScoreUpdated, fingerprint, ruleID, severity, "local")
+	scoreEvent.Score = newScore
+	scoreEvent.Threshold = s.config.ScoreThreshold
+	s.eventHandler.OnBanEvent(scoreEvent)
+
 	// Check if threshold exceeded
 	if newScore >= s.config.ScoreThreshold {
 		s.logger.Info("score threshold exceeded, issuing ban")
@@ -138,6 +163,12 @@ func (s *BanService) issueScoreBasedBan(fingerprint, ruleID, severity string) *B
 			s.logger.Error("failed to store ban in local cache: %v", err)
 			return &BanIssueResult{Issued: false, Score: newScore}
 		}
+
+		// Emit issued event
+		issuedEvent := NewBanEvent(BanEventIssued, fingerprint, ruleID, severity, "local")
+		issuedEvent.TTL = ttl
+		issuedEvent.Score = newScore
+		s.eventHandler.OnBanEvent(issuedEvent)
 
 		return &BanIssueResult{Issued: true, Entry: entry, Score: newScore}
 	}
