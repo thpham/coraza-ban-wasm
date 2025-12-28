@@ -15,7 +15,7 @@ func (ctx *httpContext) checkBan() bool {
 	}
 
 	// 1. Check local cache first (fastest)
-	if entry, found := ctx.checkLocalBan(ctx.fingerprint); found {
+	if entry, found := ctx.banStore.CheckBan(ctx.fingerprint); found {
 		ctx.logInfo("ban found in local cache for %s (rule=%s, expires=%d)",
 			ctx.fingerprint, entry.RuleID, entry.ExpiresAt)
 		ctx.isBanned = true
@@ -72,7 +72,7 @@ func (ctx *httpContext) issueDirectBan(ruleID, severity string) {
 	entry := NewBanEntry(ctx.fingerprint, reason, ruleID, severity, ttl)
 
 	// Store in local cache
-	if err := ctx.setLocalBan(entry); err != nil {
+	if err := ctx.banStore.SetBan(entry); err != nil {
 		ctx.logError("failed to store ban in local cache: %v", err)
 	} else {
 		ctx.logInfo("ban issued: fingerprint=%s, rule=%s, severity=%s, ttl=%d",
@@ -90,8 +90,12 @@ func (ctx *httpContext) issueScoreBasedBan(ruleID, severity string) {
 	// Get score increment for this rule
 	scoreIncrement := ctx.config.GetScore(ruleID, severity)
 
-	// Update score
-	newScore := ctx.updateScore(ctx.fingerprint, ruleID, severity, scoreIncrement)
+	// Update score using the score store
+	newScore, err := ctx.scoreStore.IncrScore(ctx.fingerprint, scoreIncrement)
+	if err != nil {
+		ctx.logError("failed to update score: %v", err)
+		return
+	}
 
 	ctx.logInfo("score updated: fingerprint=%s, rule=%s, score=%d/%d",
 		ctx.fingerprint, ruleID, newScore, ctx.config.ScoreThreshold)
@@ -107,7 +111,7 @@ func (ctx *httpContext) issueScoreBasedBan(ruleID, severity string) {
 		entry.Score = newScore
 
 		// Store ban
-		if err := ctx.setLocalBan(entry); err != nil {
+		if err := ctx.banStore.SetBan(entry); err != nil {
 			ctx.logError("failed to store ban in local cache: %v", err)
 		}
 
@@ -126,7 +130,7 @@ func (ctx *httpContext) handleRedisBanResponse(banned bool, entry *BanEntry) {
 		ctx.logInfo("ban found in Redis for %s", ctx.fingerprint)
 
 		// Update local cache with Redis data
-		if err := ctx.setLocalBan(entry); err != nil {
+		if err := ctx.banStore.SetBan(entry); err != nil {
 			ctx.logError("failed to sync ban to local cache: %v", err)
 		}
 

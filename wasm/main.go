@@ -66,10 +66,14 @@ func (ctx *pluginContext) OnPluginStart(pluginConfigurationSize int) types.OnPlu
 
 // NewHttpContext creates a new HTTP context for each request
 func (ctx *pluginContext) NewHttpContext(contextID uint32) types.HttpContext {
+	logger := NewPluginLogger(ctx.config, contextID)
 	return &httpContext{
 		contextID:     contextID,
 		pluginContext: ctx,
 		config:        ctx.config,
+		logger:        logger,
+		banStore:      NewLocalBanStore(logger),
+		scoreStore:    NewLocalScoreStore(logger, ctx.config.ScoreDecaySeconds),
 	}
 }
 
@@ -79,6 +83,11 @@ type httpContext struct {
 	contextID     uint32
 	pluginContext *pluginContext
 	config        *PluginConfig
+
+	// Services
+	logger     Logger
+	banStore   BanStore
+	scoreStore ScoreStore
 
 	// Request state
 	fingerprint     string
@@ -195,27 +204,19 @@ func (ctx *httpContext) injectCookie() {
 	}
 }
 
-// Logging helpers
+// Logging helpers - delegate to the logger interface
 func (ctx *httpContext) logDebug(format string, args ...interface{}) {
-	if ctx.config.ShouldLog("debug") {
-		proxywasm.LogDebugf("coraza-ban-wasm[%d]: "+format, append([]interface{}{ctx.contextID}, args...)...)
-	}
+	ctx.logger.Debug(format, args...)
 }
 
 func (ctx *httpContext) logInfo(format string, args ...interface{}) {
-	if ctx.config.ShouldLog("info") {
-		proxywasm.LogInfof("coraza-ban-wasm[%d]: "+format, append([]interface{}{ctx.contextID}, args...)...)
-	}
+	ctx.logger.Info(format, args...)
 }
 
 func (ctx *httpContext) logWarn(format string, args ...interface{}) {
-	if ctx.config.ShouldLog("warn") {
-		proxywasm.LogWarnf("coraza-ban-wasm[%d]: "+format, append([]interface{}{ctx.contextID}, args...)...)
-	}
+	ctx.logger.Warn(format, args...)
 }
 
 func (ctx *httpContext) logError(format string, args ...interface{}) {
-	if ctx.config.ShouldLog("error") {
-		proxywasm.LogErrorf("coraza-ban-wasm[%d]: "+format, append([]interface{}{ctx.contextID}, args...)...)
-	}
+	ctx.logger.Error(format, args...)
 }
