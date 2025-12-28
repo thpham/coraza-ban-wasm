@@ -104,7 +104,7 @@ func (ctx *pluginContext) NewHttpContext(contextID uint32) types.HttpContext {
 		scoreStore:         ctx.scoreStore,  // Shared
 		fingerprintService: NewFingerprintService(ctx.config, logger),
 		metadataService:    NewMetadataService(logger),
-		banService:         NewBanService(ctx.config, logger, ctx.banStore, ctx.scoreStore),
+		banService:         NewBanService(ctx.config, logger, ctx.banStore, ctx.scoreStore, ctx.redisClient),
 		redisClient:        ctx.redisClient, // Shared
 	}
 }

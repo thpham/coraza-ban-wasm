@@ -122,3 +122,12 @@ func NewNoopEventHandler() *NoopEventHandler {
 func (h *NoopEventHandler) OnBanEvent(event *BanEvent) {
 	// No-op
 }
+
+// =============================================================================
+// Compile-Time Interface Verification
+// =============================================================================
+
+var (
+	_ EventHandler = (*LoggingEventHandler)(nil)
+	_ EventHandler = (*NoopEventHandler)(nil)
+)

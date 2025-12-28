@@ -23,17 +23,21 @@ type BanIssueResult struct {
 
 // BanService orchestrates ban checking and issuance operations.
 // It uses BanStore and ScoreStore for persistence and handles
-// the core ban logic independent of Redis operations.
+// the core ban logic. Redis sync is handled for multi-instance
+// score sharing when enabled.
 type BanService struct {
 	config       *PluginConfig
 	logger       Logger
 	banStore     BanStore
 	scoreStore   ScoreStore
+	redisClient  RedisClient
 	eventHandler EventHandler
 }
 
 // NewBanService creates a new ban service.
-func NewBanService(config *PluginConfig, logger Logger, banStore BanStore, scoreStore ScoreStore) *BanService {
+// The redisClient parameter enables multi-instance score synchronization.
+// Pass nil or NoopRedisClient to disable Redis score sync.
+func NewBanService(config *PluginConfig, logger Logger, banStore BanStore, scoreStore ScoreStore, redisClient RedisClient) *BanService {
 	// Choose event handler based on configuration
 	var eventHandler EventHandler
 	if config.EventsEnabled {
@@ -42,11 +46,17 @@ func NewBanService(config *PluginConfig, logger Logger, banStore BanStore, score
 		eventHandler = NewNoopEventHandler()
 	}
 
+	// Use NoopRedisClient if nil provided
+	if redisClient == nil {
+		redisClient = NewNoopRedisClient()
+	}
+
 	return &BanService{
 		config:       config,
 		logger:       logger,
 		banStore:     banStore,
 		scoreStore:   scoreStore,
+		redisClient:  redisClient,
 		eventHandler: eventHandler,
 	}
 }
@@ -137,15 +147,28 @@ func (s *BanService) issueDirectBan(fingerprint, ruleID, severity string) *BanIs
 }
 
 // issueScoreBasedBan updates the score and bans if threshold exceeded.
+// Scores are synchronized to Redis for multi-instance consistency.
 func (s *BanService) issueScoreBasedBan(fingerprint, ruleID, severity string) *BanIssueResult {
 	// Get score increment for this rule
 	scoreIncrement := s.config.GetScore(ruleID, severity)
 
-	// Update score using the score store
+	// Update score using the local score store (primary, synchronous)
 	newScore, err := s.scoreStore.IncrScore(fingerprint, scoreIncrement)
 	if err != nil {
 		s.logger.Error("failed to update score: %v", err)
 		return &BanIssueResult{Issued: false, Score: 0}
+	}
+
+	// Sync score to Redis for multi-instance consistency (fire-and-forget)
+	if s.redisClient.IsConfigured() {
+		s.redisClient.IncrScoreAsync(fingerprint, scoreIncrement, s.config.ScoreTTL,
+			func(redisScore int, success bool) {
+				if success {
+					s.logger.Debug("score synced to Redis: fingerprint=%s, redis_score=%d", fingerprint, redisScore)
+				} else {
+					s.logger.Warn("failed to sync score to Redis for %s", fingerprint)
+				}
+			})
 	}
 
 	s.logger.Info("score updated: fingerprint=%s, rule=%s, score=%d/%d",

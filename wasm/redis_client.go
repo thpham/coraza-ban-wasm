@@ -460,3 +460,15 @@ func (c *NoopRedisClient) IncrScoreAsync(fingerprint string, increment, ttl int,
 func (c *NoopRedisClient) GetScoreAsync(fingerprint string, callback func(int, bool)) {
 	callback(0, false) // Always not found
 }
+
+// =============================================================================
+// Compile-Time Interface Verification
+// =============================================================================
+// These declarations ensure that implementations satisfy RedisClient interface
+// at compile time. If any required method is missing or has wrong signature,
+// the build will fail with a clear error message.
+
+var (
+	_ RedisClient = (*WebdisClient)(nil)
+	_ RedisClient = (*NoopRedisClient)(nil)
+)
