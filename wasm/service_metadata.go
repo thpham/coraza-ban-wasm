@@ -7,67 +7,49 @@ import (
 	"github.com/tetratelabs/proxy-wasm-go-sdk/proxywasm"
 )
 
-// CorazaMetadata represents WAF decision metadata from Coraza
-type CorazaMetadata struct {
-	// Action is the WAF decision: "block", "deny", "drop", "log", "pass"
-	Action string `json:"action"`
+// =============================================================================
+// Metadata Service
+// =============================================================================
 
-	// RuleID is the triggered rule identifier (e.g., "930120")
-	RuleID string `json:"rule_id"`
-
-	// Severity is the rule severity: "critical", "high", "medium", "low"
-	Severity string `json:"severity"`
-
-	// Message is the rule description or matched data
-	Message string `json:"message"`
-
-	// MatchedData contains the data that triggered the rule
-	MatchedData string `json:"matched_data"`
-
-	// Tags contains rule tags (e.g., ["OWASP_CRS", "attack-sqli"])
-	Tags []string `json:"tags"`
+// MetadataService implements MetadataExtractor interface.
+// It extracts Coraza WAF metadata from Envoy dynamic metadata or response headers.
+type MetadataService struct {
+	logger Logger
 }
 
-// IsBlocked returns true if the WAF action is a blocking action
-func (m *CorazaMetadata) IsBlocked() bool {
-	switch strings.ToLower(m.Action) {
-	case "block", "deny", "drop":
-		return true
-	default:
-		return false
+// NewMetadataService creates a new metadata service.
+func NewMetadataService(logger Logger) *MetadataService {
+	return &MetadataService{
+		logger: logger,
 	}
 }
 
-// extractCorazaMetadata extracts Coraza WAF metadata from Envoy dynamic metadata
-func (ctx *httpContext) extractCorazaMetadata() *CorazaMetadata {
+// Extract retrieves WAF metadata from the current request/response context.
+// Implements MetadataExtractor interface.
+func (s *MetadataService) Extract() *CorazaMetadata {
 	// Try multiple metadata paths where Coraza might store its decision
 	metadataPaths := [][]string{
-		// Standard Coraza filter metadata path
 		{"metadata", "filter_metadata", "envoy.filters.http.wasm", "coraza"},
-		// Alternative: direct Coraza metadata
 		{"metadata", "filter_metadata", "coraza"},
-		// Alternative: custom metadata path
 		{"metadata", "filter_metadata", "envoy.filters.http.coraza"},
 	}
 
 	for _, path := range metadataPaths {
-		metadata := ctx.tryExtractMetadata(path)
+		metadata := s.tryExtractMetadata(path)
 		if metadata != nil {
 			return metadata
 		}
 	}
 
 	// Try reading from response headers as fallback
-	// Some Coraza configurations add headers instead of metadata
-	return ctx.extractFromHeaders()
+	return s.extractFromHeaders()
 }
 
-// tryExtractMetadata attempts to extract metadata from a specific path
-func (ctx *httpContext) tryExtractMetadata(path []string) *CorazaMetadata {
-	// Get the property value
+// tryExtractMetadata attempts to extract metadata from a specific path.
+func (s *MetadataService) tryExtractMetadata(path []string) *CorazaMetadata {
 	value, err := proxywasm.GetProperty(path)
 	if err != nil {
-		ctx.logDebug("metadata not found at path %v: %v", path, err)
+		s.logger.Debug("metadata not found at path %v: %v", path, err)
 		return nil
 	}
 
@@ -79,15 +61,15 @@ func (ctx *httpContext) tryExtractMetadata(path []string) *CorazaMetadata {
 	var metadata CorazaMetadata
 	if err := json.Unmarshal(value, &metadata); err != nil {
 		// Try parsing as a simple string format
-		return ctx.parseStringMetadata(string(value))
+		return s.parseStringMetadata(string(value))
 	}
 
 	return &metadata
 }
 
-// parseStringMetadata parses metadata from a simple string format
+// parseStringMetadata parses metadata from a simple string format.
 // Format: "action=block;rule_id=930120;severity=high"
-func (ctx *httpContext) parseStringMetadata(value string) *CorazaMetadata {
+func (s *MetadataService) parseStringMetadata(value string) *CorazaMetadata {
 	metadata := &CorazaMetadata{}
 
 	parts := strings.Split(value, ";")
@@ -121,9 +103,8 @@ func (ctx *httpContext) parseStringMetadata(value string) *CorazaMetadata {
 	return metadata
 }
 
-// extractFromHeaders extracts Coraza metadata from response headers
-func (ctx *httpContext) extractFromHeaders() *CorazaMetadata {
-	// Check for Coraza-specific headers
+// extractFromHeaders extracts Coraza metadata from response headers.
+func (s *MetadataService) extractFromHeaders() *CorazaMetadata {
 	action, err := proxywasm.GetHttpResponseHeader("x-coraza-action")
 	if err != nil || action == "" {
 		return nil
@@ -133,7 +114,6 @@ func (ctx *httpContext) extractFromHeaders() *CorazaMetadata {
 		Action: action,
 	}
 
-	// Extract additional headers if present
 	if ruleID, err := proxywasm.GetHttpResponseHeader("x-coraza-rule-id"); err == nil {
 		metadata.RuleID = ruleID
 	}
@@ -149,15 +129,13 @@ func (ctx *httpContext) extractFromHeaders() *CorazaMetadata {
 	return metadata
 }
 
-// getStatusCode retrieves the HTTP response status code
-func (ctx *httpContext) getStatusCode() int {
-	// Get the :status pseudo-header
+// GetStatusCode retrieves the HTTP response status code.
+func (s *MetadataService) GetStatusCode() int {
 	status, err := proxywasm.GetHttpResponseHeader(":status")
 	if err != nil {
 		return 0
 	}
 
-	// Parse status code
 	code := 0
 	for _, c := range status {
 		if c >= '0' && c <= '9' {
@@ -168,21 +146,19 @@ func (ctx *httpContext) getStatusCode() int {
 	return code
 }
 
-// isBlockedResponse checks if the response indicates a blocked request
-// This is a fallback when Coraza metadata is not available
-func (ctx *httpContext) isBlockedResponse() bool {
-	statusCode := ctx.getStatusCode()
+// IsBlockedResponse checks if the response indicates a blocked request.
+// This is a fallback when Coraza metadata is not available.
+func (s *MetadataService) IsBlockedResponse() bool {
+	statusCode := s.GetStatusCode()
 
 	// Coraza typically returns 403 for blocked requests
 	if statusCode == 403 || statusCode == 406 || statusCode == 418 {
-		// Check for Coraza-specific indicators in headers
 		if server, err := proxywasm.GetHttpResponseHeader("server"); err == nil {
 			if strings.Contains(strings.ToLower(server), "coraza") {
 				return true
 			}
 		}
 
-		// Check for WAF block indicator header
 		if _, err := proxywasm.GetHttpResponseHeader("x-waf-block"); err == nil {
 			return true
 		}
@@ -190,3 +166,6 @@ func (ctx *httpContext) isBlockedResponse() bool {
 
 	return false
 }
+
+// Compile-time interface verification
+var _ MetadataExtractor = (*MetadataService)(nil)

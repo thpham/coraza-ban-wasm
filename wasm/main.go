@@ -32,6 +32,12 @@ type pluginContext struct {
 	types.DefaultPluginContext
 	contextID uint32
 	config    *PluginConfig
+
+	// Shared services (initialized once, used by all requests)
+	logger      Logger
+	banStore    BanStore
+	scoreStore  ScoreStore
+	redisClient RedisClient
 }
 
 // OnPluginStart is called when the plugin starts
@@ -50,7 +56,25 @@ func (ctx *pluginContext) OnPluginStart(pluginConfigurationSize int) types.OnPlu
 		return types.OnPluginStartStatusFailed
 	}
 
+	// Validate configuration for fail-fast behavior
+	if err := config.Validate(); err != nil {
+		proxywasm.LogCriticalf("coraza-ban-wasm: %v", err)
+		return types.OnPluginStartStatusFailed
+	}
+
 	ctx.config = config
+
+	// Initialize shared services (created once, shared across all requests)
+	ctx.logger = NewPluginLogger(config, 0) // Context 0 for plugin-level logging
+	ctx.banStore = NewLocalBanStore(ctx.logger)
+	ctx.scoreStore = NewLocalScoreStore(ctx.logger, config.ScoreDecaySeconds)
+
+	// Create appropriate Redis client based on configuration
+	if config.RedisCluster != "" {
+		ctx.redisClient = NewWebdisClient(config.RedisCluster, uint32(DefaultRedisTimeout), ctx.logger)
+	} else {
+		ctx.redisClient = NewNoopRedisClient()
+	}
 
 	proxywasm.LogInfof("coraza-ban-wasm: plugin started with config - "+
 		"redis_cluster=%s, ban_ttl=%d, scoring=%v, fingerprint_mode=%s, dry_run=%v",
@@ -66,10 +90,22 @@ func (ctx *pluginContext) OnPluginStart(pluginConfigurationSize int) types.OnPlu
 
 // NewHttpContext creates a new HTTP context for each request
 func (ctx *pluginContext) NewHttpContext(contextID uint32) types.HttpContext {
+	// Create per-request logger with context ID for tracing
+	logger := NewPluginLogger(ctx.config, contextID)
+
+	// Use shared stores and redis client from pluginContext
+	// Only create per-request services that need request-specific state
 	return &httpContext{
-		contextID:     contextID,
-		pluginContext: ctx,
-		config:        ctx.config,
+		contextID:          contextID,
+		pluginContext:      ctx,
+		config:             ctx.config,
+		logger:             logger,
+		banStore:           ctx.banStore,    // Shared
+		scoreStore:         ctx.scoreStore,  // Shared
+		fingerprintService: NewFingerprintService(ctx.config, logger),
+		metadataService:    NewMetadataService(logger),
+		banService:         NewBanService(ctx.config, logger, ctx.banStore, ctx.scoreStore, ctx.redisClient),
+		redisClient:        ctx.redisClient, // Shared
 	}
 }
 
@@ -79,6 +115,15 @@ type httpContext struct {
 	contextID     uint32
 	pluginContext *pluginContext
 	config        *PluginConfig
+
+	// Services
+	logger             Logger
+	banStore           BanStore
+	scoreStore         ScoreStore
+	fingerprintService *FingerprintService
+	metadataService    *MetadataService
+	banService         *BanService
+	redisClient        RedisClient
 
 	// Request state
 	fingerprint     string
@@ -96,8 +141,14 @@ type httpContext struct {
 func (ctx *httpContext) OnHttpRequestHeaders(numHeaders int, endOfStream bool) types.Action {
 	ctx.logDebug("processing request headers")
 
-	// Calculate client fingerprint
-	ctx.calculateFingerprint()
+	// Calculate client fingerprint using the service
+	result := ctx.fingerprintService.CalculateWithDetails()
+	ctx.fingerprint = result.Fingerprint
+	ctx.clientIP = result.ClientIP
+	ctx.userAgent = result.UserAgent
+	ctx.ja3Fingerprint = result.JA3Fingerprint
+	ctx.cookieValue = result.CookieValue
+	ctx.generatedCookie = result.GeneratedCookie
 
 	// Check if client is banned
 	if ctx.checkBan() {
@@ -120,11 +171,11 @@ func (ctx *httpContext) OnHttpResponseHeaders(numHeaders int, endOfStream bool) 
 		return types.ActionContinue
 	}
 
-	statusCode := ctx.getStatusCode()
+	statusCode := ctx.metadataService.GetStatusCode()
 	ctx.logDebug("processing response headers, status=%d", statusCode)
 
-	// Extract Coraza WAF metadata
-	ctx.corazaMetadata = ctx.extractCorazaMetadata()
+	// Extract Coraza WAF metadata using the service
+	ctx.corazaMetadata = ctx.metadataService.Extract()
 
 	// Check if WAF blocked the request
 	if ctx.corazaMetadata != nil && ctx.corazaMetadata.IsBlocked() {
@@ -195,27 +246,15 @@ func (ctx *httpContext) injectCookie() {
 	}
 }
 
-// Logging helpers
+// Logging helpers - delegate to the logger interface
 func (ctx *httpContext) logDebug(format string, args ...interface{}) {
-	if ctx.config.ShouldLog("debug") {
-		proxywasm.LogDebugf("coraza-ban-wasm[%d]: "+format, append([]interface{}{ctx.contextID}, args...)...)
-	}
+	ctx.logger.Debug(format, args...)
 }
 
 func (ctx *httpContext) logInfo(format string, args ...interface{}) {
-	if ctx.config.ShouldLog("info") {
-		proxywasm.LogInfof("coraza-ban-wasm[%d]: "+format, append([]interface{}{ctx.contextID}, args...)...)
-	}
-}
-
-func (ctx *httpContext) logWarn(format string, args ...interface{}) {
-	if ctx.config.ShouldLog("warn") {
-		proxywasm.LogWarnf("coraza-ban-wasm[%d]: "+format, append([]interface{}{ctx.contextID}, args...)...)
-	}
+	ctx.logger.Info(format, args...)
 }
 
 func (ctx *httpContext) logError(format string, args ...interface{}) {
-	if ctx.config.ShouldLog("error") {
-		proxywasm.LogErrorf("coraza-ban-wasm[%d]: "+format, append([]interface{}{ctx.contextID}, args...)...)
-	}
+	ctx.logger.Error(format, args...)
 }

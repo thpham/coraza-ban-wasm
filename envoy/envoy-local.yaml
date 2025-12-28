@@ -94,7 +94,8 @@ static_resources:
                                   "SecRule ARGS|ARGS_NAMES|REQUEST_COOKIES|REQUEST_COOKIES_NAMES|REQUEST_BODY|REQUEST_HEADERS|XML:/*|XML://@* \"@rx (?i)(union.*select|select.*from|insert.*into|delete.*from|drop.*table|update.*set)\" \"id:1001,phase:2,deny,status:403,msg:'SQL Injection Detected',tag:'attack-sqli',severity:'CRITICAL'\"",
                                   "SecRule ARGS|ARGS_NAMES|REQUEST_COOKIES|REQUEST_COOKIES_NAMES|REQUEST_BODY|REQUEST_HEADERS \"@rx (?i)(<script|javascript:|onerror=|onload=)\" \"id:1002,phase:2,deny,status:403,msg:'XSS Attack Detected',tag:'attack-xss',severity:'ERROR'\"",
                                   "SecRule REQUEST_URI|ARGS|ARGS_NAMES \"@rx (?i)(\\.\\.[\\\\/]|/etc/passwd|/proc/self)\" \"id:1003,phase:2,deny,status:403,msg:'Path Traversal Detected',tag:'attack-lfi',severity:'ERROR'\"",
-                                  "SecRule ARGS|REQUEST_BODY \"@rx (?i)(;\\s*(ls|cat|wget|curl|bash|sh)\\s)\" \"id:1004,phase:2,deny,status:403,msg:'Command Injection Detected',tag:'attack-rce',severity:'CRITICAL'\""
+                                  "SecRule ARGS|REQUEST_BODY \"@rx (?i)(;\\s*(ls|cat|wget|curl|bash|sh)\\s)\" \"id:1004,phase:2,deny,status:403,msg:'Command Injection Detected',tag:'attack-rce',severity:'CRITICAL'\"",
+                                  "SecRule ARGS:suspicious \"@rx ^true$\" \"id:1005,phase:2,pass,log,msg:'Suspicious Activity Detected',tag:'anomaly',severity:'WARNING'\""
                                 ]
                               },
                               "default_directives": "default"

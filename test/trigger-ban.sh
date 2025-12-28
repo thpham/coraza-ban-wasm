@@ -57,8 +57,10 @@ echo ""
 
 # Step 2: SQL injection should trigger WAF block
 echo_info "Step 2: Sending SQL injection payload..."
-SQLI_PAYLOAD="1' UNION SELECT NULL--"
-RESPONSE=$(curl -sf -o /dev/null -w "%{http_code}" "${ENVOY_URL}/get?id=${SQLI_PAYLOAD}" || echo "000")
+# URL-encoded: 1' UNION SELECT NULL--
+SQLI_PAYLOAD="1'%20UNION%20SELECT%20NULL--"
+# Note: Don't use -f here since we expect 403 (which would cause curl to fail with -f)
+RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" "${ENVOY_URL}/get?id=${SQLI_PAYLOAD}" 2>/dev/null)
 if [ "$RESPONSE" = "403" ]; then
     echo_ok "SQL injection blocked with 403 Forbidden"
 else
@@ -73,7 +75,8 @@ sleep 1
 
 # Step 3: Same client should now be banned
 echo_info "Step 3: Sending normal request (should be banned)..."
-RESPONSE=$(curl -sf -o /dev/null -w "%{http_code}" "${ENVOY_URL}/get" || echo "000")
+# Note: Don't use -f here since we expect 403
+RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" "${ENVOY_URL}/get" 2>/dev/null)
 if [ "$RESPONSE" = "403" ]; then
     echo_ok "Client is now banned (403 Forbidden)"
 else

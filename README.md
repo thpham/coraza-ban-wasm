@@ -8,252 +8,291 @@
 - A **TinyGo-based Envoy WASM filter**
 - A **cluster-wide distributed banlist stored in Redis**
 - **Fingerprint-based banning** (instead of unsafe IP-only bans)
-- **Optional behavioral scoring**, rate-based auto-escalation, and multi-layer ban TTL policies
+- **Behavioral scoring** with time-based decay and threshold escalation
+- **Event-driven architecture** for observability and monitoring
 
 `coraza-ban-wasm` enables **mesh-wide, real-time IP/fingerprint blocking** triggered directly by WAF rules while avoiding collateral damage in shared NAT environments.
 
 ---
 
-# 🎯 Objective
+## Features
 
-The goal of `coraza-ban-wasm` is to provide:
-
-- **Real-time threat mitigation** by reacting instantly to Coraza WAF block events.
-- **Distributed bans** propagated across all Envoy/Istio gateways within a cluster.
-- **Intelligent fingerprint-based banning** to prevent penalizing entire NAT’ed networks.
-- **Extensible and pluggable architecture** that can incorporate scoring engines, custom WAF metadata, and alternative ban sources.
-- **WASM-native speed and efficiency**, running inside Envoy without modifying the control plane.
-
-The project makes Envoy/Istio behave like a **dynamic, self-updating firewall**, driven by WAF intelligence.
-
----
-
-# 🚀 System Overview
-
-`coraza-ban-wasm` is composed of three cooperating components:
-
-## 1. **WASM Filter (TinyGo)**
-
-A custom Envoy WASM plugin written in **TinyGo** intercepts:
-
-- Coraza WAF metadata (via dynamic metadata)
-- Request attributes (headers, IP, TLS info)
-- Existing banlist state (from shared-data + Redis)
-
-The filter performs:
-
-- Detection of Coraza _blocked_ events
-- Calculation of a **client fingerprint**
-- Local in-proxy ban caching
-- Enforcement (drop or deny)
-- Pushes new bans to Redis (asynchronously)
-
-The plugin uses Envoy WASM ABI for async Redis calls and shared-data APIs for local cache.
+| Feature                  | Description                                        |
+| ------------------------ | -------------------------------------------------- |
+| **Real-time Banning**    | Instantly react to Coraza WAF block events         |
+| **Distributed Bans**     | Cluster-wide enforcement via Redis                 |
+| **Smart Fingerprinting** | Composite fingerprints avoid NAT collateral damage |
+| **Behavioral Scoring**   | Risk-based scoring with time decay                 |
+| **Event System**         | Pluggable event handlers for observability         |
+| **Dry-Run Mode**         | Test configurations without blocking               |
 
 ---
 
-## 2. **Distributed Banlist (Redis)**
+## Quick Start
 
-`coraza-ban-wasm` uses Redis as the central ban store.
+### Prerequisites
 
-### Redis responsibilities:
+- TinyGo 0.30+
+- Go 1.23+
+- Envoy or Istio with WASM enabled
+- Redis (via Webdis HTTP API)
+- [Just](https://github.com/casey/just) task runner
 
-- Store fingerprint keys with TTL (e.g., `ban:<fp>`)
-- Support tiered TTL per severity
-- Make bans instantly available cluster-wide
-- Relay ban updates to multiple gateways
+### Build
 
-### Example Redis schema:
+```bash
+# Build the WASM plugin
+just build
 
-- `ban:<fingerprint>` → `{ ttl: 600s, reason: "waf-rule:930120" }`
+# Run tests
+just test
 
----
-
-## 3. **Client Fingerprint Engine**
-
-Because full IP banning is unsafe for NAT’ed users, `coraza-ban-wasm` creates a **composite fingerprint**, typically:
-
-```
-fingerprint = sha256(
-  JA3 +
-  User-Agent +
-  partial IP (/24) +
-  optional cookie (__bm)
-)
+# Full CI cycle
+just all
 ```
 
-This reduces the risk of blocking:
+### Deploy
 
-- Corporate NAT users
-- VPN exit nodes
-- Cloud provider shared egress IPs
+1. Build the WASM binary:
 
-### Data sources:
+   ```bash
+   just build
+   ```
 
-- **JA3 TLS fingerprint** (from Envoy TLS properties)
-- **User-Agent header**
-- **x-forwarded-for** (extract IP prefix)
-- **Optional Gateway-injected cookie** for sticky identification
-- **Optional behavioral profile** (request rate, paths, anomalies)
+2. Configure Envoy to load the filter (see [envoy/](envoy/))
+
+3. Configure Redis/Webdis endpoint in plugin config
 
 ---
 
-# 🧠 Behavioral Scoring (Optional)
+## Architecture
 
-Instead of banning on first WAF block, `coraza-ban-wasm` may apply a **risk-based scoring** approach:
+### Component Overview
 
-- +10 for a medium-risk WAF rule
-- +40 for high-risk (RCE/SSRF)
-- +1 per burst of 20 requests
-- +5 per suspicious path (e.g., admin probes)
+```
+┌───────────────────────────────────────────────────────────┐
+│                     Envoy Proxy                           │
+│  ┌───────────────────────────────────────────────────┐    │
+│  │              coraza-ban-wasm (WASM)               │    │
+│  │  ┌───────────┐  ┌───────────┐  ┌───────────────┐  │    │
+│  │  │ BanService│  │Fingerprint│  │MetadataService│  │    │
+│  │  │           │  │  Service  │  │               │  │    │
+│  │  └─────┬─────┘  └───────────┘  └───────────────┘  │    │
+│  │        │                                          │    │
+│  │  ┌─────┴─────┐  ┌───────────┐  ┌───────────────┐  │    │
+│  │  │LocalStore │  │RedisClient│  │ EventHandler  │  │    │
+│  │  │(shared-   │  │ (Webdis)  │  │               │  │    │
+│  │  │  data)    │  │           │  │               │  │    │
+│  │  └───────────┘  └─────┬─────┘  └───────────────┘  │    │
+│  └───────────────────────┼───────────────────────────┘    │
+└──────────────────────────┼────────────────────────────────┘
+                           │
+                    ┌──────▼──────┐
+                    │    Redis    │
+                    │  (Webdis)   │
+                    └─────────────┘
+```
 
-A ban triggers when score exceeds a threshold.
+### Design Principles
 
-Scores can be stored locally or in Redis.
+- **Interface-based Dependency Injection** - All services depend on interfaces
+- **Compile-time Interface Verification** - `var _ Interface = (*Impl)(nil)`
+- **Null Object Pattern** - Graceful degradation when Redis unavailable
+- **Constructor Injection** - All dependencies via `NewXxx()` constructors
+
+### Core Interfaces
+
+| Interface               | Purpose                                       |
+| ----------------------- | --------------------------------------------- |
+| `Logger`                | Structured logging (Debug, Info, Warn, Error) |
+| `BanStore`              | Ban storage (CheckBan, SetBan, DeleteBan)     |
+| `ScoreStore`            | Score storage with decay                      |
+| `RedisClient`           | Async Redis operations via Webdis             |
+| `MetadataExtractor`     | Extract Coraza WAF metadata                   |
+| `FingerprintCalculator` | Compute client fingerprints                   |
+| `EventHandler`          | Handle ban lifecycle events                   |
 
 ---
 
-# 🔧 Detailed WASM Plugin Responsibilities
+## Configuration
 
-### 1. Hook into Envoy filter chain:
+The plugin is configured via JSON in the Envoy WASM config:
 
-- `OnHttpRequestHeaders()`
-- `OnHttpResponseHeaders()` (for cookie injection)
-
-### 2. Read dynamic metadata from Coraza (example):
-
+```yaml
+typed_config:
+  "@type": type.googleapis.com/envoy.extensions.filters.http.wasm.v3.Wasm
+  config:
+    name: coraza-ban-wasm
+    configuration:
+      "@type": type.googleapis.com/google.protobuf.StringValue
+      value: |
+        {
+          "redis_cluster": "webdis",
+          "ban_ttl_default": 600,
+          "scoring_enabled": true,
+          "score_threshold": 100,
+          "fingerprint_mode": "full",
+          "log_level": "info"
+        }
 ```
-"envoy.filters.http.coraza": {
-  "waf_action": "block",
-  "rule_id": "930120",
-  "severity": "high"
-}
-```
 
-### 3. Build fingerprint on each request
+### Configuration Options
 
-- Compute JA3 hash from TLS context
-- Extract UA
-- Extract partial IP (/24)
-- Extract `__bm` cookie or generate it
-- Hash them into a unique key
+| Option                | Type   | Default  | Description                                   |
+| --------------------- | ------ | -------- | --------------------------------------------- |
+| `redis_cluster`       | string | `""`     | Envoy cluster name for Redis/Webdis           |
+| `ban_ttl_default`     | int    | `600`    | Default ban TTL in seconds                    |
+| `ban_ttl_by_severity` | map    | `{}`     | TTL by severity (critical, high, medium, low) |
+| `scoring_enabled`     | bool   | `false`  | Enable behavioral scoring                     |
+| `score_threshold`     | int    | `100`    | Score threshold to trigger ban                |
+| `score_decay_seconds` | int    | `60`     | Decay 1 point per interval                    |
+| `score_rules`         | map    | `{}`     | Score increment by rule ID                    |
+| `score_by_severity`   | map    | `{}`     | Score increment by severity                   |
+| `fingerprint_mode`    | string | `"full"` | `full`, `partial`, or `ip-only`               |
+| `cookie_name`         | string | `"__bm"` | Tracking cookie name                          |
+| `inject_cookie`       | bool   | `false`  | Inject tracking cookie                        |
+| `ban_response_code`   | int    | `403`    | HTTP status for banned requests               |
+| `ban_response_body`   | string | `""`     | Response body for banned requests             |
+| `log_level`           | string | `"info"` | `debug`, `info`, `warn`, `error`              |
+| `dry_run`             | bool   | `false`  | Log but don't ban                             |
+| `events_enabled`      | bool   | `true`   | Emit ban lifecycle events                     |
 
-### 4. Ban enforcement
-
-- Check local shared-data banlist
-- Check Redis cache (asynchronously)
-- If banned → drop or return 403 immediately
-
-### 5. Ban issuance
-
-When a WAF block occurs:
-
-- Compute fingerprint
-- Write to shared-data
-- Write to Redis with TTL
-- Optionally record metadata
+See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed configuration guide.
 
 ---
 
-# 🗂️ Repository Structure
+## Fingerprinting
+
+`coraza-ban-wasm` creates composite fingerprints to avoid blocking entire NAT networks:
 
 ```
-`coraza-ban-wasm`/
-├── wasm/                     # TinyGo WASM filter code
-│   ├── ban.go                # ban issuing + enforcement
-│   ├── cache.go              # cache
-│   ├── config.go             # config
-│   ├── fingerprint.go        # fingerprint engine
-│   ├── main.go               # entrypoint
-│   ├── metadata.go           # Coraza metadata parsing
-│   ├── redis.go              # Redis integration
-│   └── utils.go
-│
-├── envoy/                    # Envoy config snippets
-│   └── filter.yaml
-│
-├── istio/                    # Istio Gateway examples
-│   └── gateway.yaml
-│
-├── operator/ (optional)      # Declarative management
-│   └── crds/
-│
-├── docs/
-│   └── architecture.md
-│
+fingerprint = sha256(JA3 + User-Agent + IP/24 + cookie)
+```
+
+### Fingerprint Modes
+
+| Mode      | Components                | Use Case             |
+| --------- | ------------------------- | -------------------- |
+| `full`    | JA3 + UA + IP/24 + cookie | Maximum precision    |
+| `partial` | UA + IP/24 + cookie       | When JA3 unavailable |
+| `ip-only` | IP address only           | Simple deployments   |
+
+---
+
+## Behavioral Scoring
+
+Instead of banning on first WAF block, apply risk-based scoring:
+
+| Event             | Default Score |
+| ----------------- | ------------- |
+| Critical severity | +50           |
+| High severity     | +40           |
+| Medium severity   | +20           |
+| Low severity      | +10           |
+
+Scores decay over time (default: -1 point per 60 seconds).
+
+Ban triggers when score exceeds threshold (default: 100).
+
+---
+
+## Event System
+
+The plugin emits events for observability:
+
+| Event Type      | Description                    |
+| --------------- | ------------------------------ |
+| `issued`        | New ban created                |
+| `enforced`      | Ban enforced (request blocked) |
+| `expired`       | Ban TTL expired                |
+| `score_updated` | Score changed                  |
+
+Events are logged via the configured `EventHandler`.
+
+---
+
+## Repository Structure
+
+```
+coraza-ban-wasm/
+├── wasm/                        # TinyGo WASM filter source
+│   ├── main.go                  # Plugin entrypoint, HTTP lifecycle
+│   ├── types.go                 # Domain types (BanEntry, ScoreEntry)
+│   ├── interfaces.go            # Service interfaces (7 interfaces)
+│   ├── config.go                # Configuration with validation
+│   ├── logger.go                # PluginLogger implementation
+│   ├── events.go                # Event system
+│   ├── store_local.go           # Local cache (Envoy shared-data)
+│   ├── redis_client.go          # WebdisClient, NoopRedisClient
+│   ├── service_ban.go           # BanService (orchestration)
+│   ├── service_fingerprint.go   # FingerprintService
+│   ├── service_metadata.go      # MetadataService
+│   ├── *_test.go                # Unit tests (76 tests)
+│   └── mocks_test.go            # Mock implementations
+├── envoy/                       # Envoy configuration examples
+├── istio/                       # Istio Gateway examples
+├── test/                        # Integration test scripts
+├── docs/                        # Documentation
+├── Justfile                     # Build commands
 └── README.md
 ```
 
 ---
 
-# 📦 Build & Development
+## Development
 
-### Requirements
+### Commands
 
-- TinyGo
-- Go 1.22+
-- Envoy or Istio with WASM enabled
-- Redis
+| Command      | Description          |
+| ------------ | -------------------- |
+| `just build` | Build WASM plugin    |
+| `just test`  | Run unit tests       |
+| `just lint`  | Run linter           |
+| `just fmt`   | Format code          |
+| `just all`   | Full CI cycle        |
+| `just dev`   | Development workflow |
 
-### Build WASM
+### Local Testing
 
+```bash
+# Start local environment (Envoy + Redis + backend)
+just up
+
+# Run integration test
+just test-ban
+
+# View logs
+just logs
+
+# Stop environment
+just down
 ```
-cd wasm
-tinygo build -o coraza-ban-wasm.wasm -target=wasi ./
-```
 
-### Envoy config snippet
+### Test Coverage
 
-```
-http_filters:
-- name: envoy.filters.http.wasm
-  typed_config:
-    @type: type.googleapis.com/envoy.extensions.filters.http.wasm.v3.Wasm
-    config:
-      name: coraza-ban-wasm
-      root_id: `coraza-ban-wasm`_root
-      vm_config:
-        runtime: envoy.wasm.runtime.v8
-        code:
-          local: { filename: "coraza-ban-wasm.wasm" }
-```
+- 76 unit tests
+- 27% code coverage (testable without WASM runtime)
+- ~73% requires integration testing with Envoy
 
 ---
 
-# 🛡️ Coraza WAF Integration
+## Coraza WAF Integration
 
-Coraza emits metadata when a rule is triggered. `coraza-ban-wasm` listens for:
+Coraza emits metadata when a rule is triggered:
 
-- `waf_action = block`
-- rule ID
-- severity
-- message or matched data (optional)
+```json
+{
+  "envoy.filters.http.coraza": {
+    "action": "block",
+    "rule_id": "930120",
+    "severity": "high",
+    "message": "SQL Injection detected"
+  }
+}
+```
 
-This allows `coraza-ban-wasm` to:
+`coraza-ban-wasm` reads this metadata to:
 
-- Issue bans on specific rule IDs
-- Prioritize critical rule classes (e.g., RCE)
-- Skip low-severity/noisy rules if configured
-
----
-
-# 🧩 Future Extensions
-
-- gRPC-based control-plane operator
-- Long-term analytics storage
-- UI dashboard for ban management
-- Distributed behavioral profiling
-- ML-based anomaly detection
-
----
-
-# 🏁 Summary
-
-`coraza-ban-wasm` empowers Istio and Envoy with **WAF-aware, real-time, distributed banning** using:
-
-- TinyGo WASM
-- Coraza WAF
-- Redis
-- Composite client fingerprinting
-
-It is lightweight, highly extensible, and designed for production-grade, multi-cloud environments where IP-only blocking is dangerous.
+- Issue bans for specific rule IDs
+- Apply severity-based scoring
+- Skip low-severity rules if configured
