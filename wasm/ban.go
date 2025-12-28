@@ -81,19 +81,3 @@ func resumeHttpRequest() error {
 	// after an async operation completes
 	return proxywasm.ResumeHttpRequest()
 }
-
-// getBanInfo returns detailed ban information for the current request
-func (ctx *httpContext) getBanInfo() *BanInfo {
-	info := &BanInfo{
-		Fingerprint: ctx.fingerprint,
-		ClientIP:    ctx.clientIP,
-		UserAgent:   ctx.userAgent,
-	}
-
-	if ctx.corazaMetadata != nil {
-		info.RuleID = ctx.corazaMetadata.RuleID
-		info.Severity = ctx.corazaMetadata.Severity
-	}
-
-	return info
-}

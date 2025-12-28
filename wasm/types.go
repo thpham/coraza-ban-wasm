@@ -56,18 +56,6 @@ func BanEntryFromJSON(data []byte) (*BanEntry, error) {
 	return &entry, nil
 }
 
-// BanInfo contains detailed ban information for logging and debugging.
-type BanInfo struct {
-	Fingerprint string
-	ClientIP    string
-	UserAgent   string
-	RuleID      string
-	Severity    string
-	TTL         int
-	Score       int
-	Reason      string
-}
-
 // =============================================================================
 // Score Types
 // =============================================================================
