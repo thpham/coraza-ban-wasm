@@ -228,10 +228,6 @@ func (ctx *httpContext) logInfo(format string, args ...interface{}) {
 	ctx.logger.Info(format, args...)
 }
 
-func (ctx *httpContext) logWarn(format string, args ...interface{}) {
-	ctx.logger.Warn(format, args...)
-}
-
 func (ctx *httpContext) logError(format string, args ...interface{}) {
 	ctx.logger.Error(format, args...)
 }

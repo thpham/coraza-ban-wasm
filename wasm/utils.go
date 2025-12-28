@@ -18,9 +18,7 @@ func sha256Hash(input string) string {
 // e.g., "192.168.1.100" -> "192.168.1"
 func extractIPPrefix(ip string) string {
 	// Handle IPv6 mapped IPv4 addresses
-	if strings.HasPrefix(ip, "::ffff:") {
-		ip = strings.TrimPrefix(ip, "::ffff:")
-	}
+	ip = strings.TrimPrefix(ip, "::ffff:")
 
 	// Check if IPv4
 	parts := strings.Split(ip, ".")

@@ -68,13 +68,6 @@ func (ctx *httpContext) handleRedisBanSetResponse(success bool) {
 	}
 }
 
-// handleRedisScoreResponse processes the response from Redis score operations
-func (ctx *httpContext) handleRedisScoreResponse(success bool, score int) {
-	if success {
-		ctx.logDebug("score synced with Redis for %s: %d", ctx.fingerprint, score)
-	}
-}
-
 // resumeHttpRequest resumes a paused HTTP request
 func resumeHttpRequest() error {
 	// In proxy-wasm, we use ResumeHttpRequest to continue processing

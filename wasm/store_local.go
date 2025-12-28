@@ -175,7 +175,6 @@ func (s *LocalScoreStore) IncrScore(fingerprint string, increment int) (int, err
 
 	// Add the increment
 	entry.Score += increment
-	entry.LastUpdated = entry.LastUpdated // Decay already updated this
 
 	// Save updated entry
 	if err := s.SetScore(entry); err != nil {
