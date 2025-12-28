@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 
 	"github.com/tetratelabs/proxy-wasm-go-sdk/proxywasm"
 )
@@ -154,8 +155,9 @@ func (c *WebdisClient) SetBanAsync(entry *BanEntry, callback func(bool)) {
 	}
 
 	key := BanKey(entry.Fingerprint)
-	// Use SETEX to set with TTL
-	path := fmt.Sprintf("/SETEX/%s/%d/%s", key, entry.TTL, string(entryJSON))
+	// Use SETEX to set with TTL, URL-encode the JSON to handle special characters
+	encodedJSON := url.PathEscape(string(entryJSON))
+	path := fmt.Sprintf("/SETEX/%s/%d/%s", key, entry.TTL, encodedJSON)
 
 	headers := [][2]string{
 		{":method", "GET"}, // webdis uses GET for all commands
@@ -215,6 +217,207 @@ func (c *WebdisClient) DeleteBanAsync(fingerprint string) {
 	}
 }
 
+// IncrScoreAsync atomically increments a score in Redis and sets TTL.
+// Uses INCRBY followed by EXPIRE for atomic increment with expiration.
+func (c *WebdisClient) IncrScoreAsync(fingerprint string, increment, ttl int, callback func(int, bool)) {
+	if !c.IsConfigured() {
+		callback(0, true) // Treat as success when not configured
+		return
+	}
+
+	key := ScoreKey(fingerprint)
+	// Use INCRBY to atomically increment
+	path := fmt.Sprintf("/INCRBY/%s/%d", key, increment)
+
+	headers := [][2]string{
+		{":method", "GET"},
+		{":path", path},
+		{":authority", c.cluster},
+		{"accept", "application/json"},
+	}
+
+	_, err := proxywasm.DispatchHttpCall(
+		c.cluster,
+		headers,
+		nil,
+		nil,
+		c.timeout,
+		func(numHeaders, bodySize, numTrailers int) {
+			c.handleIncrScoreResponse(fingerprint, bodySize, ttl, callback)
+		},
+	)
+
+	if err != nil {
+		c.logger.Error("failed to dispatch Redis score incr: %v", err)
+		callback(0, false)
+	}
+}
+
+// handleIncrScoreResponse processes the INCRBY response and sets TTL.
+func (c *WebdisClient) handleIncrScoreResponse(fingerprint string, bodySize, ttl int, callback func(int, bool)) {
+	body, err := proxywasm.GetHttpCallResponseBody(0, bodySize)
+	if err != nil {
+		c.logger.Error("failed to get Redis INCRBY response body: %v", err)
+		callback(0, false)
+		return
+	}
+
+	status := getHttpCallResponseStatus()
+	if status != "200" {
+		c.logger.Debug("Redis INCRBY returned non-200 status: %s", status)
+		callback(0, false)
+		return
+	}
+
+	// Parse response: {"INCRBY": <number>}
+	var response map[string]interface{}
+	if err := json.Unmarshal(body, &response); err != nil {
+		c.logger.Error("failed to parse Redis INCRBY response: %v", err)
+		callback(0, false)
+		return
+	}
+
+	value, ok := response["INCRBY"]
+	if !ok {
+		c.logger.Error("INCRBY key not found in response")
+		callback(0, false)
+		return
+	}
+
+	// JSON numbers are float64
+	newScore := 0
+	switch v := value.(type) {
+	case float64:
+		newScore = int(v)
+	case int:
+		newScore = v
+	default:
+		c.logger.Error("unexpected INCRBY value type: %T", value)
+		callback(0, false)
+		return
+	}
+
+	// Set TTL on the key (fire-and-forget)
+	c.setScoreTTL(fingerprint, ttl)
+
+	callback(newScore, true)
+}
+
+// setScoreTTL sets the TTL on a score key (fire-and-forget).
+func (c *WebdisClient) setScoreTTL(fingerprint string, ttl int) {
+	key := ScoreKey(fingerprint)
+	path := fmt.Sprintf("/EXPIRE/%s/%d", key, ttl)
+
+	headers := [][2]string{
+		{":method", "GET"},
+		{":path", path},
+		{":authority", c.cluster},
+		{"accept", "application/json"},
+	}
+
+	_, err := proxywasm.DispatchHttpCall(
+		c.cluster,
+		headers,
+		nil,
+		nil,
+		c.timeout,
+		func(numHeaders, bodySize, numTrailers int) {
+			// Fire and forget
+			c.logger.Debug("score TTL set for %s", fingerprint)
+		},
+	)
+
+	if err != nil {
+		c.logger.Error("failed to dispatch Redis EXPIRE: %v", err)
+	}
+}
+
+// GetScoreAsync retrieves a score from Redis.
+func (c *WebdisClient) GetScoreAsync(fingerprint string, callback func(int, bool)) {
+	if !c.IsConfigured() {
+		callback(0, false)
+		return
+	}
+
+	key := ScoreKey(fingerprint)
+	path := fmt.Sprintf("/GET/%s", key)
+
+	headers := [][2]string{
+		{":method", "GET"},
+		{":path", path},
+		{":authority", c.cluster},
+		{"accept", "application/json"},
+	}
+
+	_, err := proxywasm.DispatchHttpCall(
+		c.cluster,
+		headers,
+		nil,
+		nil,
+		c.timeout,
+		func(numHeaders, bodySize, numTrailers int) {
+			c.handleGetScoreResponse(bodySize, callback)
+		},
+	)
+
+	if err != nil {
+		c.logger.Error("failed to dispatch Redis score get: %v", err)
+		callback(0, false)
+	}
+}
+
+// handleGetScoreResponse processes the GET score response.
+func (c *WebdisClient) handleGetScoreResponse(bodySize int, callback func(int, bool)) {
+	body, err := proxywasm.GetHttpCallResponseBody(0, bodySize)
+	if err != nil {
+		c.logger.Error("failed to get Redis GET response body: %v", err)
+		callback(0, false)
+		return
+	}
+
+	status := getHttpCallResponseStatus()
+	if status != "200" {
+		callback(0, false)
+		return
+	}
+
+	// Parse response: {"GET": "<number>"} or {"GET": null}
+	var response map[string]interface{}
+	if err := json.Unmarshal(body, &response); err != nil {
+		c.logger.Error("failed to parse Redis GET response: %v", err)
+		callback(0, false)
+		return
+	}
+
+	value, ok := response["GET"]
+	if !ok || value == nil {
+		callback(0, false)
+		return
+	}
+
+	// Score is stored as string in Redis
+	scoreStr, ok := value.(string)
+	if !ok {
+		// Try as number (INCRBY result)
+		if num, ok := value.(float64); ok {
+			callback(int(num), true)
+			return
+		}
+		callback(0, false)
+		return
+	}
+
+	// Parse string to int
+	score := 0
+	for _, c := range scoreStr {
+		if c >= '0' && c <= '9' {
+			score = score*10 + int(c-'0')
+		}
+	}
+
+	callback(score, true)
+}
+
 // =============================================================================
 // NoopRedisClient - No-operation client for testing/disabled Redis
 // =============================================================================
@@ -246,4 +449,14 @@ func (c *NoopRedisClient) SetBanAsync(entry *BanEntry, callback func(bool)) {
 // DeleteBanAsync does nothing.
 func (c *NoopRedisClient) DeleteBanAsync(fingerprint string) {
 	// No-op
+}
+
+// IncrScoreAsync immediately calls the callback with zero score.
+func (c *NoopRedisClient) IncrScoreAsync(fingerprint string, increment, ttl int, callback func(int, bool)) {
+	callback(0, false) // Not configured, score not tracked in Redis
+}
+
+// GetScoreAsync immediately calls the callback with not-found result.
+func (c *NoopRedisClient) GetScoreAsync(fingerprint string, callback func(int, bool)) {
+	callback(0, false) // Always not found
 }

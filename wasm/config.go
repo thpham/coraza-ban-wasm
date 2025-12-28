@@ -99,6 +99,10 @@ type PluginConfig struct {
 
 	// DryRun enables dry-run mode (log but don't ban)
 	DryRun bool `json:"dry_run"`
+
+	// EventsEnabled controls whether ban events are emitted (default: true)
+	// Set to false to disable event logging for reduced overhead
+	EventsEnabled bool `json:"events_enabled"`
 }
 
 // DefaultConfig returns a PluginConfig with default values
@@ -125,6 +129,7 @@ func DefaultConfig() *PluginConfig {
 		BanResponseBody: "Forbidden",
 		LogLevel:        LogLevelInfo,
 		DryRun:          false,
+		EventsEnabled:   true,
 	}
 }
 

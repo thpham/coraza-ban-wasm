@@ -32,6 +32,12 @@ type pluginContext struct {
 	types.DefaultPluginContext
 	contextID uint32
 	config    *PluginConfig
+
+	// Shared services (initialized once, used by all requests)
+	logger      Logger
+	banStore    BanStore
+	scoreStore  ScoreStore
+	redisClient RedisClient
 }
 
 // OnPluginStart is called when the plugin starts
@@ -58,6 +64,18 @@ func (ctx *pluginContext) OnPluginStart(pluginConfigurationSize int) types.OnPlu
 
 	ctx.config = config
 
+	// Initialize shared services (created once, shared across all requests)
+	ctx.logger = NewPluginLogger(config, 0) // Context 0 for plugin-level logging
+	ctx.banStore = NewLocalBanStore(ctx.logger)
+	ctx.scoreStore = NewLocalScoreStore(ctx.logger, config.ScoreDecaySeconds)
+
+	// Create appropriate Redis client based on configuration
+	if config.RedisCluster != "" {
+		ctx.redisClient = NewWebdisClient(config.RedisCluster, uint32(DefaultRedisTimeout), ctx.logger)
+	} else {
+		ctx.redisClient = NewNoopRedisClient()
+	}
+
 	proxywasm.LogInfof("coraza-ban-wasm: plugin started with config - "+
 		"redis_cluster=%s, ban_ttl=%d, scoring=%v, fingerprint_mode=%s, dry_run=%v",
 		config.RedisCluster,
@@ -72,29 +90,22 @@ func (ctx *pluginContext) OnPluginStart(pluginConfigurationSize int) types.OnPlu
 
 // NewHttpContext creates a new HTTP context for each request
 func (ctx *pluginContext) NewHttpContext(contextID uint32) types.HttpContext {
+	// Create per-request logger with context ID for tracing
 	logger := NewPluginLogger(ctx.config, contextID)
-	banStore := NewLocalBanStore(logger)
-	scoreStore := NewLocalScoreStore(logger, ctx.config.ScoreDecaySeconds)
 
-	// Create appropriate Redis client based on configuration
-	var redisClient RedisClient
-	if ctx.config.RedisCluster != "" {
-		redisClient = NewWebdisClient(ctx.config.RedisCluster, uint32(DefaultRedisTimeout), logger)
-	} else {
-		redisClient = NewNoopRedisClient()
-	}
-
+	// Use shared stores and redis client from pluginContext
+	// Only create per-request services that need request-specific state
 	return &httpContext{
 		contextID:          contextID,
 		pluginContext:      ctx,
 		config:             ctx.config,
 		logger:             logger,
-		banStore:           banStore,
-		scoreStore:         scoreStore,
+		banStore:           ctx.banStore,    // Shared
+		scoreStore:         ctx.scoreStore,  // Shared
 		fingerprintService: NewFingerprintService(ctx.config, logger),
 		metadataService:    NewMetadataService(logger),
-		banService:         NewBanService(ctx.config, logger, banStore, scoreStore),
-		redisClient:        redisClient,
+		banService:         NewBanService(ctx.config, logger, ctx.banStore, ctx.scoreStore),
+		redisClient:        ctx.redisClient, // Shared
 	}
 }
 

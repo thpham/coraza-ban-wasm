@@ -55,7 +55,7 @@ type FingerprintCalculator interface {
 // Redis Client Interface
 // =============================================================================
 
-// RedisClient defines async Redis operations for ban management.
+// RedisClient defines async Redis operations for ban and score management.
 // All operations are non-blocking and use callbacks for results.
 // This interface enables dependency injection and facilitates unit testing.
 type RedisClient interface {
@@ -70,6 +70,15 @@ type RedisClient interface {
 	// DeleteBanAsync removes a ban from Redis.
 	// Fire-and-forget, no callback needed.
 	DeleteBanAsync(fingerprint string)
+
+	// IncrScoreAsync atomically increments a score in Redis.
+	// Callback receives (newScore, success).
+	// TTL is applied to set/refresh the key expiration.
+	IncrScoreAsync(fingerprint string, increment, ttl int, callback func(int, bool))
+
+	// GetScoreAsync retrieves a score from Redis.
+	// Callback receives (score, found).
+	GetScoreAsync(fingerprint string, callback func(int, bool))
 
 	// IsConfigured returns true if Redis is configured.
 	IsConfigured() bool

@@ -34,12 +34,20 @@ type BanService struct {
 
 // NewBanService creates a new ban service.
 func NewBanService(config *PluginConfig, logger Logger, banStore BanStore, scoreStore ScoreStore) *BanService {
+	// Choose event handler based on configuration
+	var eventHandler EventHandler
+	if config.EventsEnabled {
+		eventHandler = NewLoggingEventHandler(logger)
+	} else {
+		eventHandler = NewNoopEventHandler()
+	}
+
 	return &BanService{
 		config:       config,
 		logger:       logger,
 		banStore:     banStore,
 		scoreStore:   scoreStore,
-		eventHandler: NewLoggingEventHandler(logger),
+		eventHandler: eventHandler,
 	}
 }
 
