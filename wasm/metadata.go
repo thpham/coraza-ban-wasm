@@ -7,37 +7,6 @@ import (
 	"github.com/tetratelabs/proxy-wasm-go-sdk/proxywasm"
 )
 
-// CorazaMetadata represents WAF decision metadata from Coraza
-type CorazaMetadata struct {
-	// Action is the WAF decision: "block", "deny", "drop", "log", "pass"
-	Action string `json:"action"`
-
-	// RuleID is the triggered rule identifier (e.g., "930120")
-	RuleID string `json:"rule_id"`
-
-	// Severity is the rule severity: "critical", "high", "medium", "low"
-	Severity string `json:"severity"`
-
-	// Message is the rule description or matched data
-	Message string `json:"message"`
-
-	// MatchedData contains the data that triggered the rule
-	MatchedData string `json:"matched_data"`
-
-	// Tags contains rule tags (e.g., ["OWASP_CRS", "attack-sqli"])
-	Tags []string `json:"tags"`
-}
-
-// IsBlocked returns true if the WAF action is a blocking action
-func (m *CorazaMetadata) IsBlocked() bool {
-	switch strings.ToLower(m.Action) {
-	case "block", "deny", "drop":
-		return true
-	default:
-		return false
-	}
-}
-
 // extractCorazaMetadata extracts Coraza WAF metadata from Envoy dynamic metadata
 func (ctx *httpContext) extractCorazaMetadata() *CorazaMetadata {
 	// Try multiple metadata paths where Coraza might store its decision

@@ -6,7 +6,43 @@ import (
 	"github.com/tetratelabs/proxy-wasm-go-sdk/proxywasm"
 )
 
-// PluginConfig holds the configuration for the coraza-ban-wasm plugin
+// Fingerprint mode constants
+const (
+	FingerprintModeFull    = "full"
+	FingerprintModePartial = "partial"
+	FingerprintModeIPOnly  = "ip-only"
+)
+
+// Log level constants
+const (
+	LogLevelDebug = "debug"
+	LogLevelInfo  = "info"
+	LogLevelWarn  = "warn"
+	LogLevelError = "error"
+)
+
+// Default configuration values
+const (
+	DefaultBanTTL         = 600
+	DefaultScoreThreshold = 100
+	DefaultScoreDecay     = 60
+	DefaultScoreTTL       = 3600
+	DefaultRedisTimeout   = 5000
+)
+
+// PluginConfig holds the runtime configuration for the coraza-ban-wasm
+// Envoy WASM filter. It is parsed from JSON during plugin startup.
+//
+// Example configuration:
+//
+//	{
+//	  "redis_cluster": "webdis",
+//	  "ban_ttl_default": 600,
+//	  "scoring_enabled": true,
+//	  "score_threshold": 100,
+//	  "fingerprint_mode": "full",
+//	  "log_level": "info"
+//	}
 type PluginConfig struct {
 	// RedisCluster is the name of the Envoy cluster for Redis HTTP calls
 	RedisCluster string `json:"redis_cluster"`
@@ -34,6 +70,9 @@ type PluginConfig struct {
 	// ScoreBySeverity maps severity levels to default score increments
 	// Used when a rule ID is not in ScoreRules
 	ScoreBySeverity map[string]int `json:"score_by_severity"`
+
+	// ScoreTTL is the TTL for score entries in Redis (default: 3600)
+	ScoreTTL int `json:"score_ttl"`
 
 	// FingerprintMode controls fingerprint calculation
 	// "full" = JA3 + UA + IP/24 + cookie (default)
@@ -64,11 +103,11 @@ type PluginConfig struct {
 func DefaultConfig() *PluginConfig {
 	return &PluginConfig{
 		RedisCluster:      "redis_cluster",
-		BanTTLDefault:     600, // 10 minutes
+		BanTTLDefault:     DefaultBanTTL,
 		BanTTLBySeverity:  map[string]int{},
 		ScoringEnabled:    false,
-		ScoreThreshold:    100,
-		ScoreDecaySeconds: 60,
+		ScoreThreshold:    DefaultScoreThreshold,
+		ScoreDecaySeconds: DefaultScoreDecay,
 		ScoreRules:        map[string]int{},
 		ScoreBySeverity: map[string]int{
 			"critical": 50,
@@ -76,12 +115,13 @@ func DefaultConfig() *PluginConfig {
 			"medium":   20,
 			"low":      10,
 		},
-		FingerprintMode: "full",
+		ScoreTTL:        DefaultScoreTTL,
+		FingerprintMode: FingerprintModeFull,
 		CookieName:      "__bm",
 		InjectCookie:    false,
 		BanResponseCode: 403,
 		BanResponseBody: "Forbidden",
-		LogLevel:        "info",
+		LogLevel:        LogLevelInfo,
 		DryRun:          false,
 	}
 }
@@ -108,19 +148,29 @@ func ParseConfig(data []byte) (*PluginConfig, error) {
 // validate ensures configuration values are valid
 func (c *PluginConfig) validate() {
 	if c.BanTTLDefault <= 0 {
-		c.BanTTLDefault = 600
+		c.BanTTLDefault = DefaultBanTTL
 	}
 
 	if c.ScoreThreshold <= 0 {
-		c.ScoreThreshold = 100
+		c.ScoreThreshold = DefaultScoreThreshold
 	}
 
 	if c.ScoreDecaySeconds <= 0 {
-		c.ScoreDecaySeconds = 60
+		c.ScoreDecaySeconds = DefaultScoreDecay
 	}
 
-	if c.FingerprintMode == "" {
-		c.FingerprintMode = "full"
+	if c.ScoreTTL <= 0 {
+		c.ScoreTTL = DefaultScoreTTL
+	}
+
+	// Validate fingerprint mode
+	validModes := map[string]bool{
+		FingerprintModeFull:    true,
+		FingerprintModePartial: true,
+		FingerprintModeIPOnly:  true,
+	}
+	if !validModes[c.FingerprintMode] {
+		c.FingerprintMode = FingerprintModeFull
 	}
 
 	if c.CookieName == "" {
@@ -135,8 +185,15 @@ func (c *PluginConfig) validate() {
 		c.BanResponseBody = "Forbidden"
 	}
 
-	if c.LogLevel == "" {
-		c.LogLevel = "info"
+	// Validate log level
+	validLogLevels := map[string]bool{
+		LogLevelDebug: true,
+		LogLevelInfo:  true,
+		LogLevelWarn:  true,
+		LogLevelError: true,
+	}
+	if !validLogLevels[c.LogLevel] {
+		c.LogLevel = LogLevelInfo
 	}
 
 	// Initialize maps if nil
@@ -182,21 +239,24 @@ func (c *PluginConfig) GetScore(ruleID, severity string) int {
 	return 10
 }
 
-// ShouldLog returns true if the given level should be logged
-func (c *PluginConfig) ShouldLog(level string) bool {
-	levels := map[string]int{
-		"debug": 0,
-		"info":  1,
-		"warn":  2,
-		"error": 3,
-	}
+// logLevelPriority maps log level strings to their priority values.
+// Higher values mean more severe/important messages.
+var logLevelPriority = map[string]int{
+	LogLevelDebug: 0,
+	LogLevelInfo:  1,
+	LogLevelWarn:  2,
+	LogLevelError: 3,
+}
 
-	configLevel, ok := levels[c.LogLevel]
+// ShouldLog returns true if the given level should be logged
+// based on the configured log level.
+func (c *PluginConfig) ShouldLog(level string) bool {
+	configLevel, ok := logLevelPriority[c.LogLevel]
 	if !ok {
 		configLevel = 1 // default to info
 	}
 
-	messageLevel, ok := levels[level]
+	messageLevel, ok := logLevelPriority[level]
 	if !ok {
 		messageLevel = 1
 	}

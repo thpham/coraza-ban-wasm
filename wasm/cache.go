@@ -69,7 +69,9 @@ func (ctx *httpContext) deleteLocalBan(fingerprint string) {
 
 	// Set empty value to "delete" (shared-data doesn't have delete)
 	_, cas, _ := proxywasm.GetSharedData(key)
-	_ = proxywasm.SetSharedData(key, []byte{}, cas)
+	if err := proxywasm.SetSharedData(key, []byte{}, cas); err != nil {
+		ctx.logDebug("failed to delete local ban for %s: %v", fingerprint, err)
+	}
 }
 
 // checkLocalScore retrieves the score entry from local cache

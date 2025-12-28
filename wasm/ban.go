@@ -165,18 +165,6 @@ func resumeHttpRequest() error {
 	return proxywasm.ResumeHttpRequest()
 }
 
-// BanInfo provides information about a ban for logging/debugging
-type BanInfo struct {
-	Fingerprint string
-	ClientIP    string
-	UserAgent   string
-	RuleID      string
-	Severity    string
-	TTL         int
-	Score       int
-	Reason      string
-}
-
 // getBanInfo returns detailed ban information for the current request
 func (ctx *httpContext) getBanInfo() *BanInfo {
 	info := &BanInfo{

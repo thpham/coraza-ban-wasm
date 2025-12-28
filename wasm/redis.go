@@ -17,10 +17,8 @@ import (
 // - GET /SETEX/<key>/<ttl>/<value> -> Returns {"SETEX": "OK"}
 // - GET /DEL/<key>       -> Returns {"DEL": 1}
 
-const (
-	// Default timeout for Redis HTTP calls (milliseconds)
-	redisTimeout = 5000
-)
+// redisTimeout uses the default timeout for Redis HTTP calls (milliseconds)
+var redisTimeout = uint32(DefaultRedisTimeout)
 
 // checkRedisBanAsync initiates an async check for a ban in Redis
 func (ctx *httpContext) checkRedisBanAsync() {
@@ -236,9 +234,7 @@ func (ctx *httpContext) syncScoreToRedis(entry *ScoreEntry) {
 	}
 
 	key := ScoreKey(entry.Fingerprint)
-	// Score entries have a longer TTL (e.g., 1 hour)
-	ttl := 3600
-	path := fmt.Sprintf("/SETEX/%s/%d/%s", key, ttl, string(entryJSON))
+	path := fmt.Sprintf("/SETEX/%s/%d/%s", key, ctx.config.ScoreTTL, string(entryJSON))
 
 	headers := [][2]string{
 		{":method", "GET"},
